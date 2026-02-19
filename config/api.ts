@@ -6,6 +6,6 @@
  * ou 'https://api.seudominio.com' para produção
  */
 export const API_CONFIG = {
-    BASE_URL: process.env.EXPO_PUBLIC_API_URL || 'http://192.168.1.8:8000',
+    BASE_URL: process.env.EXPO_PUBLIC_API_URL || 'http://192.168.1.5:8000',
     TIMEOUT: 30000, // 30 segundos
 };

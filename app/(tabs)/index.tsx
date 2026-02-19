@@ -2,16 +2,21 @@ import BottomNav from '@/components/BottomNav';
 import { LoadingSquares } from '@/components/loading-squares';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
-import { Student, studentsService } from '@/services/students';
+import { useStudent } from '@/context/StudentContext';
+import { Exercise, exercisesService } from '@/services/exercises';
+import { Message, messagesService } from '@/services/messages';
+import { Student } from '@/services/students';
+import { Test, testsService } from '@/services/tests';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { Bell, ChevronDown, LogOut } from 'lucide-react-native';
-import React, { useCallback, useEffect, useState } from 'react';
+import { Bell, ChevronDown, LogOut, RefreshCw } from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Modal,
   Platform,
+  RefreshControl,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -22,43 +27,43 @@ import {
 
 export default function Home() {
   const router = useRouter();
-  const { logout, isAuthenticated, user } = useAuth();
-  const [students, setStudents] = useState<Student[]>([]);
-  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
-  const [isLoadingStudents, setIsLoadingStudents] = useState(true);
+  const { logout, isAuthenticated, user, isLoading: isLoadingAuth } = useAuth();
+  const { students, selectedStudent, isLoading: isLoadingStudents, setSelectedStudent } = useStudent();
   const [showStudentSelector, setShowStudentSelector] = useState(false);
   const [isChangingStudent, setIsChangingStudent] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isRefreshingManually, setIsRefreshingManually] = useState(false);
+  const [isLoadingDashboard, setIsLoadingDashboard] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [exercises, setExercises] = useState<Exercise[]>([]);
+  const [tests, setTests] = useState<Test[]>([]);
 
-  const loadStudents = useCallback(async () => {
-    try {
-      setIsLoadingStudents(true);
-      const studentsList = await studentsService.getStudents();
-      setStudents(studentsList);
-
-      // Seleciona o primeiro aluno automaticamente se houver alunos
-      if (studentsList.length > 0) {
-        setSelectedStudent(studentsList[0]);
-      }
-    } catch (error: any) {
-      Alert.alert(
-        'Erro',
-        error?.message || 'Não foi possível carregar os alunos. Tente novamente.',
-        [{ text: 'OK' }]
-      );
-    } finally {
-      setIsLoadingStudents(false);
-    }
-  }, []);
-
-  // Busca alunos ao carregar a tela
+  // Proteção: redireciona para login se não estiver autenticado
   useEffect(() => {
-    if (isAuthenticated) {
-      loadStudents();
+    if (!isLoadingAuth && !isAuthenticated) {
+      router.replace('/login');
     }
-  }, [isAuthenticated, loadStudents]);
+  }, [isAuthenticated, isLoadingAuth, router]);
 
-  const handleSelectStudent = async (student: Student) => {
+  useEffect(() => {
+    if (!isLoadingAuth && isAuthenticated && user?.type === 'teacher') {
+      router.replace('/teacher-dashboard');
+    }
+  }, [isAuthenticated, isLoadingAuth, user?.type, router]);
+
+  // Se não estiver autenticado ou ainda estiver carregando, mostra loading
+  if (isLoadingAuth || !isAuthenticated) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.centeredLoadingContainer}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+        </View>
+      </View>
+    );
+  }
+
+  const handleSelectStudent = async (student: NonNullable<typeof selectedStudent>) => {
     if (selectedStudent?.id === student.id) {
       setShowStudentSelector(false);
       return;
@@ -70,7 +75,7 @@ export default function Home() {
     // Simula um pequeno delay para mostrar o loading e transição suave
     await new Promise(resolve => setTimeout(resolve, 600));
 
-    setSelectedStudent(student);
+    await setSelectedStudent(student);
     setIsChangingStudent(false);
   };
 
@@ -111,17 +116,125 @@ export default function Home() {
     );
   };
 
-  const messages = [
-    { title: 'Exercício de Matemática', subtitle: 'Prof. Carlos', time: 'Hoje 14:30', icon: '📚' },
-    { title: 'Aviso Importante', subtitle: 'Coordenação', time: 'Hoje 10:15', icon: '⚠️' },
-    { title: 'Trabalho de Português', subtitle: 'Profa. Ana', time: 'Ontem 16:45', icon: '✍️' },
-  ];
+  const loadDashboardData = useCallback(async () => {
+    if (!selectedStudent?.id) {
+      setMessages([]);
+      setExercises([]);
+      setTests([]);
+      return;
+    }
 
-  const events = [
-    { date: '02 Nov', title: 'Prova de Matemática', color: '#fee2e2', textColor: '#dc2626' },
-    { date: '05 Nov', title: 'Entrega Trabalho de Ciências', color: '#d1fae5', textColor: '#059669' },
-    { date: '08 Nov', title: 'Reunião de Pais', color: '#dbeafe', textColor: '#2563eb' },
-  ];
+    try {
+      const [messagesData, exercisesData, testsData] = await Promise.all([
+        messagesService.getMessages({ aluno_id: selectedStudent.id }),
+        exercisesService.getExercises({ aluno_id: selectedStudent.id }),
+        testsService.getTests({ aluno_id: selectedStudent.id }),
+      ]);
+
+      setMessages(messagesData);
+      setExercises(exercisesData);
+      setTests(testsData);
+    } catch (error: any) {
+      Alert.alert('Erro', error?.message || 'Não foi possível carregar o painel.');
+    }
+  }, [selectedStudent?.id]);
+
+  useEffect(() => {
+    const load = async () => {
+      if (!isAuthenticated || user?.type === 'teacher' || isLoadingStudents) return;
+      setIsLoadingDashboard(true);
+      await loadDashboardData();
+      setIsLoadingDashboard(false);
+    };
+    load();
+  }, [isAuthenticated, user?.type, isLoadingStudents, loadDashboardData]);
+
+  const onRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    await loadDashboardData();
+    setIsRefreshing(false);
+  }, [loadDashboardData]);
+
+  const handleManualRefresh = useCallback(async () => {
+    setIsRefreshingManually(true);
+    await loadDashboardData();
+    setIsRefreshingManually(false);
+  }, [loadDashboardData]);
+
+  const formatRelativeDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffTime = Math.abs(now.getTime() - date.getTime());
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) {
+      return `Hoje ${date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+    }
+    if (diffDays === 1) {
+      return `Ontem ${date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+    }
+    return date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
+  };
+
+  const getMessageIcon = (message: Message): string => {
+    const fullText = `${message.titulo} ${message.conteudo}`.toLowerCase();
+
+    if (fullText.includes('trabalho')) {
+      return '✍️';
+    }
+    if (fullText.includes('exercicio') || fullText.includes('exercício') || fullText.includes('livro')) {
+      return '📚';
+    }
+    if (
+      message.tipo === 'aviso' ||
+      message.tipo === 'atencao' ||
+      fullText.includes('aviso') ||
+      fullText.includes('mensagem')
+    ) {
+      return '⚠️';
+    }
+    return '⚠️';
+  };
+
+  const getExerciseIcon = (exercise: Exercise): string => {
+    const type = (exercise.tipo_exercicio || '').toLowerCase().trim();
+    if (type.includes('trabalho')) {
+      return '✍️';
+    }
+    return '📚';
+  };
+
+  const recentMessages = useMemo(
+    () =>
+      [...messages]
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, 4),
+    [messages]
+  );
+
+  const recentExercises = useMemo(
+    () =>
+      [...exercises]
+        .sort((a, b) => new Date(a.data_entrega).getTime() - new Date(b.data_entrega).getTime())
+        .slice(0, 4),
+    [exercises]
+  );
+
+  const upcomingTests = useMemo(
+    () =>
+      [...tests]
+        .filter((test) => new Date(test.data_prova).getTime() >= new Date().setHours(0, 0, 0, 0))
+        .sort((a, b) => new Date(a.data_prova).getTime() - new Date(b.data_prova).getTime())
+        .slice(0, 4),
+    [tests]
+  );
+
+  const unreadMessages = useMemo(() => messages.filter((msg) => !msg.lida).length, [messages]);
+
+  const pendingExercises = useMemo(
+    () => exercises.filter((exercise) => new Date(exercise.data_entrega).getTime() >= new Date().setHours(0, 0, 0, 0)).length,
+    [exercises]
+  );
 
   return (
     <View style={styles.container}>
@@ -150,9 +263,12 @@ export default function Home() {
           )}
         </View>
         <View style={styles.headerIcons}>
-          <TouchableOpacity style={styles.iconButton}>
+          <TouchableOpacity style={styles.iconButton} onPress={() => router.push('/messages')}>
             <Bell size={20} color={Colors.text} />
-            <View style={styles.badge} />
+            {unreadMessages > 0 ? <View style={styles.badge} /> : null}
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.iconButton} onPress={handleManualRefresh}>
+            <RefreshCw size={20} color={Colors.text} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.iconButton} onPress={handleLogout}>
             <LogOut size={20} color={Colors.text} />
@@ -160,7 +276,11 @@ export default function Home() {
         </View>
       </View>
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />}
+      >
         <LinearGradient
           colors={Colors.gradient.primary as [string, string]}
           start={{ x: 0, y: 0 }}
@@ -177,48 +297,107 @@ export default function Home() {
 
         <View style={styles.statsContainer}>
           <View style={styles.statCard}>
-            <Text style={[styles.statNumber, { color: Colors.primary }]}>2</Text>
+            <Text style={[styles.statNumber, { color: Colors.primary }]}>{pendingExercises}</Text>
             <Text style={styles.statLabel}>Exercícios pendentes</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={[styles.statNumber, { color: Colors.secondary }]}>1</Text>
-            <Text style={styles.statLabel}>Prova próxima semana</Text>
+            <Text style={[styles.statNumber, { color: Colors.secondary }]}>{upcomingTests.length}</Text>
+            <Text style={styles.statLabel}>Próximas provas</Text>
           </View>
         </View>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Mensagens Recentes</Text>
           <View style={styles.messagesList}>
-            {messages.map((msg, i) => (
-              <TouchableOpacity
-                key={i}
-                style={styles.messageCard}
-                onPress={() => router.push('/messages')}
-              >
-                <Text style={styles.messageIcon}>{msg.icon}</Text>
-                <View style={styles.messageContent}>
-                  <Text style={styles.messageTitle}>{msg.title}</Text>
-                  <Text style={styles.messageSubtitle}>{msg.subtitle}</Text>
-                </View>
-                <Text style={styles.messageTime}>{msg.time}</Text>
-              </TouchableOpacity>
-            ))}
+            {isLoadingDashboard ? (
+              <View style={styles.emptyContainer}>
+                <LoadingSquares squareSize={16} gap={6} />
+              </View>
+            ) : recentMessages.length === 0 ? (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyText}>Nenhuma mensagem recente</Text>
+              </View>
+            ) : (
+              recentMessages.map((msg) => (
+                <TouchableOpacity
+                  key={msg.id}
+                  style={styles.messageCard}
+                  onPress={() => router.push('/messages')}
+                >
+                  <Text style={styles.messageIcon}>{getMessageIcon(msg)}</Text>
+                  <View style={styles.messageContent}>
+                    <Text style={styles.messageTitle} numberOfLines={1}>{msg.titulo}</Text>
+                    <Text style={styles.messageSubtitle} numberOfLines={1}>{msg.tipo}</Text>
+                  </View>
+                  <Text style={styles.messageTime}>{formatRelativeDate(msg.created_at)}</Text>
+                </TouchableOpacity>
+              ))
+            )}
           </View>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Próximos Eventos</Text>
+          <Text style={styles.sectionTitle}>Exercícios</Text>
           <View style={styles.eventsList}>
-            {events.map((event, i) => (
-              <View key={i} style={styles.eventCard}>
-                <View style={[styles.eventDate, { backgroundColor: event.color }]}>
-                  <Text style={[styles.eventDateText, { color: event.textColor }]}>
-                    {event.date}
-                  </Text>
-                </View>
-                <Text style={styles.eventTitle}>{event.title}</Text>
+            {isLoadingDashboard ? (
+              <View style={styles.emptyContainer}>
+                <LoadingSquares squareSize={16} gap={6} />
               </View>
-            ))}
+            ) : recentExercises.length === 0 ? (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyText}>Nenhum exercício disponível</Text>
+              </View>
+            ) : (
+              recentExercises.map((exercise) => (
+                <TouchableOpacity
+                  key={exercise.id}
+                  style={styles.eventCard}
+                  onPress={() => router.push('/exercises')}
+                >
+                  <Text style={styles.messageIcon}>{getExerciseIcon(exercise)}</Text>
+                  <View style={styles.eventContent}>
+                    <Text style={styles.eventTitle} numberOfLines={1}>{exercise.titulo}</Text>
+                    <Text style={styles.eventSubtitle} numberOfLines={1}>
+                      Entrega: {formatRelativeDate(exercise.data_entrega)}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))
+            )}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Próximas Provas</Text>
+          <View style={styles.eventsList}>
+            {isLoadingDashboard ? (
+              <View style={styles.emptyContainer}>
+                <LoadingSquares squareSize={16} gap={6} />
+              </View>
+            ) : upcomingTests.length === 0 ? (
+              <View style={styles.emptyContainer}>
+                <Text style={styles.emptyText}>Nenhuma prova próxima</Text>
+              </View>
+            ) : (
+              upcomingTests.map((test) => (
+                <TouchableOpacity key={test.id} style={styles.eventCard} onPress={() => router.push('/exams')}>
+                  <View style={[styles.eventDate, { backgroundColor: '#fee2e2' }]}>
+                    <Text style={[styles.eventDateText, { color: '#dc2626' }]}>
+                      {new Date(test.data_prova).toLocaleDateString('pt-BR', {
+                        day: '2-digit',
+                        month: 'short',
+                      })}
+                    </Text>
+                  </View>
+                  <View style={styles.eventContent}>
+                    <Text style={styles.eventTitle} numberOfLines={1}>{test.titulo}</Text>
+                    <Text style={styles.eventSubtitle} numberOfLines={1}>
+                      {test.disciplina?.nome || 'Disciplina'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))
+            )}
           </View>
         </View>
       </ScrollView>
@@ -289,16 +468,18 @@ export default function Home() {
         </View>
       </Modal>
 
-      {/* Overlay de loading ao fazer logout */}
+      {/* Overlay de loading ao atualizar/sair */}
       <Modal
-        visible={isLoggingOut}
+        visible={isLoggingOut || isRefreshingManually}
         transparent
         animationType="fade"
       >
         <View style={styles.loadingOverlay}>
           <View style={styles.loadingModal}>
             <LoadingSquares squareSize={20} gap={8} />
-            <Text style={styles.loadingText}>Saindo do sistema...</Text>
+            <Text style={styles.loadingText}>
+              {isLoggingOut ? 'Saindo do sistema...' : 'Atualizando painel...'}
+            </Text>
           </View>
         </View>
       </Modal>
@@ -343,6 +524,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     marginTop: 2,
+  },
+  centeredLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   studentSelector: {
     flexDirection: 'row',
@@ -480,7 +666,28 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: Colors.text,
+  },
+  eventSubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    color: Colors.textMuted,
+  },
+  eventContent: {
     flex: 1,
+  },
+  emptyContainer: {
+    backgroundColor: Colors.white,
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  emptyText: {
+    fontSize: 14,
+    color: Colors.textMuted,
+    textAlign: 'center',
   },
   modalOverlay: {
     flex: 1,

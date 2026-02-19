@@ -63,13 +63,17 @@ export default function Login() {
       }
 
       // Realiza login
-      await login({
+      const loggedUser = await login({
         cpf: cpfClean,
         password,
       });
 
-      // Redireciona para a tela inicial
-      router.replace('/');
+      // Redireciona conforme o perfil do usuário
+      if (loggedUser.type === 'teacher') {
+        router.replace('/teacher-dashboard');
+      } else {
+        router.replace('/');
+      }
     } catch (err: any) {
       setError(err.message || 'Erro ao fazer login. Verifique suas credenciais.');
     } finally {
@@ -192,21 +196,12 @@ export default function Login() {
               <TouchableOpacity onPress={() => router.push('/forgot-password')}>
                 <Text style={styles.linkText}>Esqueceu a senha?</Text>
               </TouchableOpacity>
-              <Text style={styles.registerText}>
-                Não tem conta?{' '}
-                <Text
-                  style={styles.linkText}
-                  onPress={() => router.push('/register')}
-                >
-                  Cadastre-se
-                </Text>
-              </Text>
             </View>
           </View>
 
           <View style={styles.footer}>
             <Text style={styles.footerText}>
-              © 2025 Agenda Escolar. Todos os direitos reservados.
+              © 2026 Agenda Escolar. Todos os direitos reservados.
             </Text>
           </View>
         </View>
@@ -219,12 +214,13 @@ export default function Login() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: '#eaf2ff',
   },
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    padding: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 28,
   },
   background: {
     position: 'absolute',
@@ -236,73 +232,85 @@ const styles = StyleSheet.create({
   },
   decorativeCircle1: {
     position: 'absolute',
-    top: -160,
-    right: -160,
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    backgroundColor: '#bfdbfe',
-    opacity: 0.2,
+    top: -220,
+    right: -120,
+    width: 360,
+    height: 360,
+    borderRadius: 180,
+    backgroundColor: '#93c5fd',
+    opacity: 0.26,
   },
   decorativeCircle2: {
     position: 'absolute',
-    bottom: -160,
-    left: -160,
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    backgroundColor: '#e9d5ff',
-    opacity: 0.2,
+    bottom: -230,
+    left: -140,
+    width: 400,
+    height: 400,
+    borderRadius: 200,
+    backgroundColor: '#c4b5fd',
+    opacity: 0.24,
   },
   card: {
     backgroundColor: Colors.white,
-    borderRadius: 16,
+    borderRadius: 24,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.8)',
+    shadowColor: '#1e3a8a',
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.2,
+    shadowRadius: 24,
+    elevation: 12,
+    marginBottom: 18,
+    alignSelf: 'center',
+    width: '100%',
+    maxWidth: 460,
   },
   header: {
-    padding: 32,
+    paddingTop: 34,
+    paddingHorizontal: 30,
+    paddingBottom: 30,
     alignItems: 'center',
   },
   iconContainer: {
-    width: 260,
-    height: 75,
+    width: 250,
+    height: 72,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 18,
   },
   logo: {
     width: '100%',
     height: '100%',
   },
   title: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: 'bold',
     color: Colors.white,
-    marginBottom: 8,
+    letterSpacing: 0.2,
+    marginBottom: 6,
   },
   subtitle: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: 15,
+    color: 'rgba(255, 255, 255, 0.88)',
+    fontWeight: '500',
   },
   content: {
-    padding: 32,
+    paddingHorizontal: 24,
+    paddingTop: 24,
+    paddingBottom: 26,
   },
   errorContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     backgroundColor: '#fef2f2',
     borderWidth: 1,
     borderColor: '#fecaca',
-    borderRadius: 8,
-    marginBottom: 16,
+    borderRadius: 12,
+    marginBottom: 18,
   },
   errorText: {
     flex: 1,
@@ -310,45 +318,57 @@ const styles = StyleSheet.create({
     color: Colors.error,
   },
   inputContainer: {
-    marginBottom: 16,
+    marginBottom: 15,
   },
   inputLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: Colors.text,
-    marginBottom: 8,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#475569',
+    marginBottom: 7,
+    marginLeft: 2,
   },
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 8,
-    backgroundColor: Colors.white,
-    paddingHorizontal: 12,
+    borderColor: '#dbe4f0',
+    borderRadius: 14,
+    backgroundColor: '#f8fbff',
+    paddingHorizontal: 14,
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   inputIcon: {
-    marginRight: 8,
+    marginRight: 10,
   },
   input: {
     flex: 1,
-    height: 44,
+    height: 50,
     fontSize: 16,
     color: Colors.text,
   },
   eyeButton: {
-    padding: 4,
+    padding: 6,
+    marginRight: -2,
   },
   submitButton: {
-    marginTop: 8,
-    borderRadius: 8,
+    marginTop: 10,
+    borderRadius: 14,
     overflow: 'hidden',
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.28,
+    shadowRadius: 16,
+    elevation: 7,
   },
   submitButtonDisabled: {
-    opacity: 0.5,
+    opacity: 0.6,
   },
   submitButtonGradient: {
-    paddingVertical: 14,
+    paddingVertical: 15,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -361,28 +381,33 @@ const styles = StyleSheet.create({
     color: Colors.white,
     fontSize: 16,
     fontWeight: 'bold',
+    letterSpacing: 0.2,
   },
   linksContainer: {
-    gap: 8,
+    marginTop: 18,
+    gap: 10,
     alignItems: 'center',
   },
   linkText: {
     fontSize: 14,
     color: Colors.primary,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   registerText: {
     fontSize: 14,
-    color: Colors.textMuted,
+    color: '#64748b',
   },
   footer: {
-    backgroundColor: Colors.muted,
-    padding: 16,
+    backgroundColor: '#f8fafc',
+    paddingVertical: 14,
+    paddingHorizontal: 12,
     alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#eef2f7',
   },
   footerText: {
     fontSize: 12,
-    color: Colors.textMuted,
+    color: '#94a3b8',
   },
 });
 
