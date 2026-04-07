@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { authService, User, LoginCredentials } from '@/services/auth';
+import { notificationsService } from '@/services/notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface AuthContextType {
@@ -144,6 +145,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
       const response = await authService.login(credentials);
       setUser(response.user);
       setIsAuthenticated(true);
+
+      // Registra push token após login bem-sucedido (não bloqueia o login em caso de falha)
+      notificationsService.registerPushToken().catch((err) =>
+        console.warn('[Push] Failed to register token after login:', err)
+      );
+
       return response.user;
     } catch (error: any) {
       throw error;
@@ -151,6 +158,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
   };
 
   const logout = async () => {
+    try {
+      // Remove push token antes de chamar logout (o token é enviado junto)
+      await notificationsService.unregisterPushToken();
+    } catch (error) {
+      console.warn('[Push] Failed to unregister token before logout:', error);
+    }
+
     try {
       await authService.logout();
       setUser(null);

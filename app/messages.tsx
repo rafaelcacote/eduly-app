@@ -3,8 +3,9 @@ import { Colors } from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { useStudent } from '@/context/StudentContext';
 import { Message, messagesService, MessageType } from '@/services/messages';
+import { Aviso, avisosService } from '@/services/avisos';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, CheckCircle2, Circle, Filter, Search, Send, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, CheckCircle2, Circle, Filter, Megaphone, Search, Send, Trash2 } from 'lucide-react-native';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -21,11 +22,13 @@ import {
 } from 'react-native';
 
 type FilterType = 'all' | 'unread' | 'read';
+type TabType = 'mensagens' | 'avisos';
 
 export default function Messages() {
   const router = useRouter();
   const { isAuthenticated, isLoading: isLoadingAuth, user } = useAuth();
   const { students, selectedStudent, setSelectedStudent } = useStudent();
+  const [activeTab, setActiveTab] = useState<TabType>('mensagens');
   const [messages, setMessages] = useState<Message[]>([]);
   const [filteredMessages, setFilteredMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -33,6 +36,15 @@ export default function Messages() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<FilterType>('all');
   const [showFilterModal, setShowFilterModal] = useState(false);
+
+  // Estado dos avisos
+  const [avisos, setAvisos] = useState<Aviso[]>([]);
+  const [avisosPage, setAvisosPage] = useState(1);
+  const [avisosMeta, setAvisosMeta] = useState<{ current_page: number; last_page: number; per_page: number; total: number } | null>(null);
+  const [isLoadingAvisos, setIsLoadingAvisos] = useState(false);
+  const [isRefreshingAvisos, setIsRefreshingAvisos] = useState(false);
+  const [isLoadingMoreAvisos, setIsLoadingMoreAvisos] = useState(false);
+  const [avisosError, setAvisosError] = useState<string | null>(null);
 
   // Proteção: redireciona para login se não estiver autenticado
   useEffect(() => {
@@ -103,11 +115,68 @@ export default function Messages() {
     }
   }, [isAuthenticated, selectedStudent, loadMessages]);
 
+  // Marca avisos como vistos ao abrir a tela (para o indicador "novo" na home)
+  useEffect(() => {
+    if (isAuthenticated) {
+      avisosService.setLastSeenAvisosAt();
+    }
+  }, [isAuthenticated]);
+
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     await loadMessages();
     setIsRefreshing(false);
   }, [loadMessages]);
+
+  // Carrega avisos (lista paginada)
+  const loadAvisos = useCallback(async (page: number = 1, append: boolean = false) => {
+    try {
+      setAvisosError(null);
+      if (page === 1) {
+        if (append) setIsLoadingMoreAvisos(true);
+        else setIsLoadingAvisos(true);
+      } else {
+        setIsLoadingMoreAvisos(true);
+      }
+      const res = await avisosService.getAvisos({ page });
+      if (page === 1) {
+        setAvisos(res.avisos);
+        setAvisosPage(1);
+      } else {
+        setAvisos(prev => [...prev, ...res.avisos]);
+      }
+      setAvisosMeta(res.meta);
+      setAvisosPage(res.meta.current_page);
+    } catch (error: any) {
+      const msg = error?.message || 'Não foi possível carregar os avisos.';
+      if (msg.includes('Acesso negado') || msg.toLowerCase().includes('permissão')) {
+        setAvisosError('Avisos não disponíveis para seu perfil.');
+      } else {
+        setAvisosError(msg);
+      }
+      if (page === 1) setAvisos([]);
+    } finally {
+      setIsLoadingAvisos(false);
+      setIsRefreshingAvisos(false);
+      setIsLoadingMoreAvisos(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'avisos' && isAuthenticated) {
+      loadAvisos(1, false);
+    }
+  }, [activeTab, isAuthenticated, loadAvisos]);
+
+  const handleRefreshAvisos = useCallback(async () => {
+    setIsRefreshingAvisos(true);
+    await loadAvisos(1, false);
+  }, [loadAvisos]);
+
+  const handleLoadMoreAvisos = useCallback(() => {
+    if (!avisosMeta || avisosMeta.current_page >= avisosMeta.last_page || isLoadingMoreAvisos) return;
+    loadAvisos(avisosMeta.current_page + 1, true);
+  }, [avisosMeta, isLoadingMoreAvisos, loadAvisos]);
 
   const handleMessagePress = async (message: Message) => {
     try {
@@ -234,7 +303,29 @@ export default function Messages() {
         )}
       </View>
 
-      {/* Filtros e busca */}
+      {/* Abas Mensagens / Avisos */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'mensagens' && styles.tabActive]}
+          onPress={() => setActiveTab('mensagens')}
+        >
+          <Text style={[styles.tabText, activeTab === 'mensagens' && styles.tabTextActive]}>
+            Mensagens
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'avisos' && styles.tabActive]}
+          onPress={() => setActiveTab('avisos')}
+        >
+          <Megaphone size={18} color={activeTab === 'avisos' ? Colors.white : Colors.textMuted} />
+          <Text style={[styles.tabText, activeTab === 'avisos' && styles.tabTextActive]}>
+            Avisos
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Filtros e busca (apenas na aba Mensagens) */}
+      {activeTab === 'mensagens' && (
       <View style={styles.filtersContainer}>
         <View style={styles.searchWrapper}>
           <Search size={18} color={Colors.textMuted} style={styles.searchIcon} />
@@ -290,7 +381,11 @@ export default function Messages() {
           </TouchableOpacity>
         )}
       </View>
+      )}
 
+      {/* Conteúdo: Lista de mensagens ou Lista de avisos */}
+      {activeTab === 'mensagens' && (
+      <>
       {/* Lista de mensagens */}
       {isLoading ? (
         <View style={styles.loadingContainer}>
@@ -382,6 +477,96 @@ export default function Messages() {
           ))}
         </ScrollView>
       )}
+      </>
+      )}
+
+      {/* Lista de avisos */}
+      {activeTab === 'avisos' && (
+        <>
+          {isLoadingAvisos ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={Colors.primary} />
+              <Text style={styles.loadingText}>Carregando avisos...</Text>
+            </View>
+          ) : avisosError ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyIcon}>📋</Text>
+              <Text style={styles.emptyText}>{avisosError}</Text>
+              <Text style={styles.emptySubtext}>
+                Os avisos da escola aparecem aqui para responsáveis e professores.
+              </Text>
+            </View>
+          ) : avisos.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyIcon}>📢</Text>
+              <Text style={styles.emptyText}>Nenhum aviso</Text>
+              <Text style={styles.emptySubtext}>
+                Os avisos da escola aparecerão aqui quando forem publicados.
+              </Text>
+            </View>
+          ) : (
+            <ScrollView
+              style={styles.scrollView}
+              contentContainerStyle={styles.scrollContent}
+              refreshControl={
+                <RefreshControl refreshing={isRefreshingAvisos} onRefresh={handleRefreshAvisos} />
+              }
+            >
+              {avisos.map((aviso) => (
+                <TouchableOpacity
+                  key={aviso.id}
+                  style={styles.messageCard}
+                  onPress={() => router.push({ pathname: '/aviso-detail', params: { avisoId: aviso.id } })}
+                >
+                  <View style={styles.messageCardContent}>
+                    <Text style={styles.avisoIcon}>📢</Text>
+                    <View style={styles.messageContent}>
+                      <View style={styles.messageHeader}>
+                        <Text style={[styles.messageTitle, styles.messageTitleUnread]} numberOfLines={1}>
+                          {aviso.titulo}
+                        </Text>
+                      </View>
+                      <Text style={styles.messagePreview} numberOfLines={2}>
+                        {aviso.conteudo}
+                      </Text>
+                      <View style={styles.messageFooter}>
+                        <View style={styles.messageMeta}>
+                          {aviso.tenant?.nome && (
+                            <Text style={styles.messageType}>{aviso.tenant.nome}</Text>
+                          )}
+                          {aviso.prioridade !== 'normal' && (
+                            <View style={[styles.priorityBadge, { backgroundColor: getPriorityColor(aviso.prioridade) + '20' }]}>
+                              <Text style={[styles.priorityText, { color: getPriorityColor(aviso.prioridade) }]}>
+                                {aviso.prioridade}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.messageTime}>
+                          {formatDate(aviso.publicado_em || aviso.created_at)}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              ))}
+              {avisosMeta && avisosMeta.current_page < avisosMeta.last_page && (
+                <TouchableOpacity
+                  style={styles.loadMoreButton}
+                  onPress={handleLoadMoreAvisos}
+                  disabled={isLoadingMoreAvisos}
+                >
+                  {isLoadingMoreAvisos ? (
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                  ) : (
+                    <Text style={styles.loadMoreText}>Carregar mais avisos</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+            </ScrollView>
+          )}
+        </>
+      )}
 
       <BottomNav />
 
@@ -456,6 +641,35 @@ const styles = StyleSheet.create({
   sendButton: {
     padding: 8,
     borderRadius: 8,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: Colors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    paddingHorizontal: 16,
+    gap: 0,
+  },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 14,
+    borderBottomWidth: 3,
+    borderBottomColor: 'transparent',
+  },
+  tabActive: {
+    borderBottomColor: Colors.primary,
+  },
+  tabText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.textMuted,
+  },
+  tabTextActive: {
+    color: Colors.primary,
   },
   filtersContainer: {
     padding: 16,
@@ -713,5 +927,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: Colors.text,
     fontWeight: '500',
+  },
+  avisoIcon: {
+    fontSize: 28,
+  },
+  loadMoreButton: {
+    padding: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    marginBottom: 24,
+  },
+  loadMoreText: {
+    fontSize: 14,
+    color: Colors.primary,
+    fontWeight: '600',
   },
 });

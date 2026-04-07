@@ -3,6 +3,7 @@ import { LoadingSquares } from '@/components/loading-squares';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { useStudent } from '@/context/StudentContext';
+import { Aviso, avisosService } from '@/services/avisos';
 import { Exercise, exercisesService } from '@/services/exercises';
 import { Message, messagesService } from '@/services/messages';
 import { Student } from '@/services/students';
@@ -36,6 +37,8 @@ export default function Home() {
   const [isLoadingDashboard, setIsLoadingDashboard] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [avisos, setAvisos] = useState<Aviso[]>([]);
+  const [lastSeenAvisosAt, setLastSeenAvisosAt] = useState<string | null>(null);
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [tests, setTests] = useState<Test[]>([]);
 
@@ -51,17 +54,6 @@ export default function Home() {
       router.replace('/teacher-dashboard');
     }
   }, [isAuthenticated, isLoadingAuth, user?.type, router]);
-
-  // Se não estiver autenticado ou ainda estiver carregando, mostra loading
-  if (isLoadingAuth || !isAuthenticated) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.centeredLoadingContainer}>
-          <ActivityIndicator size="large" color={Colors.primary} />
-        </View>
-      </View>
-    );
-  }
 
   const handleSelectStudent = async (student: NonNullable<typeof selectedStudent>) => {
     if (selectedStudent?.id === student.id) {
@@ -90,50 +82,56 @@ export default function Home() {
   };
 
   const handleLogout = async () => {
-    Alert.alert(
-      'Sair',
-      'Tem certeza que deseja sair?',
-      [
-        {
-          text: 'Cancelar',
-          style: 'cancel',
-        },
-        {
-          text: 'Sair',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setIsLoggingOut(true);
-              await logout();
-              // O redirecionamento será feito automaticamente pelo _layout.tsx
-            } catch (error) {
-              setIsLoggingOut(false);
-              Alert.alert('Erro', 'Não foi possível fazer logout. Tente novamente.');
-            }
-          },
-        },
-      ]
-    );
+    const doLogout = async () => {
+      try {
+        setIsLoggingOut(true);
+        await logout();
+      } catch (error) {
+        setIsLoggingOut(false);
+        if (Platform.OS === 'web') {
+          window.alert('Não foi possível fazer logout. Tente novamente.');
+        } else {
+          Alert.alert('Erro', 'Não foi possível fazer logout. Tente novamente.');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm('Tem certeza que deseja sair?')) {
+        doLogout();
+      }
+    } else {
+      Alert.alert('Sair', 'Tem certeza que deseja sair?', [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Sair', style: 'destructive', onPress: doLogout },
+      ]);
+    }
   };
 
   const loadDashboardData = useCallback(async () => {
     if (!selectedStudent?.id) {
       setMessages([]);
+      setAvisos([]);
       setExercises([]);
       setTests([]);
       return;
     }
 
     try {
-      const [messagesData, exercisesData, testsData] = await Promise.all([
+      const [messagesData, exercisesData, testsData, lastSeen] = await Promise.all([
         messagesService.getMessages({ aluno_id: selectedStudent.id }),
         exercisesService.getExercises({ aluno_id: selectedStudent.id }),
         testsService.getTests({ aluno_id: selectedStudent.id }),
+        avisosService.getLastSeenAvisosAt(),
       ]);
 
       setMessages(messagesData);
       setExercises(exercisesData);
       setTests(testsData);
+      setLastSeenAvisosAt(lastSeen);
+
+      // Avisos em paralelo (não bloqueia o painel se 403)
+      avisosService.getAvisos({ page: 1 }).then((res) => setAvisos(res.avisos)).catch(() => setAvisos([]));
     } catch (error: any) {
       Alert.alert('Erro', error?.message || 'Não foi possível carregar o painel.');
     }
@@ -204,12 +202,23 @@ export default function Home() {
     return '📚';
   };
 
-  const recentMessages = useMemo(
-    () =>
-      [...messages]
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-        .slice(0, 4),
-    [messages]
+  type RecentItem = { type: 'message'; data: Message } | { type: 'aviso'; data: Aviso };
+
+  const recentMessagesAndAvisos = useMemo((): RecentItem[] => {
+    const messageItems: RecentItem[] = messages.map((m) => ({ type: 'message' as const, data: m }));
+    const avisoItems: RecentItem[] = avisos.map((a) => ({ type: 'aviso' as const, data: a }));
+    return [...messageItems, ...avisoItems]
+      .sort((a, b) => {
+        const dateA = a.type === 'message' ? new Date(a.data.created_at).getTime() : new Date(a.data.publicado_em || a.data.created_at).getTime();
+        const dateB = b.type === 'message' ? new Date(b.data.created_at).getTime() : new Date(b.data.publicado_em || b.data.created_at).getTime();
+        return dateB - dateA;
+      })
+      .slice(0, 8);
+  }, [messages, avisos]);
+
+  const hasNewAvisos = useMemo(
+    () => avisos.some((a) => avisosService.isAvisoNew(a, lastSeenAvisosAt)),
+    [avisos, lastSeenAvisosAt]
   );
 
   const recentExercises = useMemo(
@@ -235,6 +244,17 @@ export default function Home() {
     () => exercises.filter((exercise) => new Date(exercise.data_entrega).getTime() >= new Date().setHours(0, 0, 0, 0)).length,
     [exercises]
   );
+
+  // Se não estiver autenticado ou ainda estiver carregando, mostra loading
+  if (isLoadingAuth || !isAuthenticated) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.centeredLoadingContainer}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -265,7 +285,7 @@ export default function Home() {
         <View style={styles.headerIcons}>
           <TouchableOpacity style={styles.iconButton} onPress={() => router.push('/messages')}>
             <Bell size={20} color={Colors.text} />
-            {unreadMessages > 0 ? <View style={styles.badge} /> : null}
+            {(unreadMessages > 0 || hasNewAvisos) ? <View style={styles.badge} /> : null}
           </TouchableOpacity>
           <TouchableOpacity style={styles.iconButton} onPress={handleManualRefresh}>
             <RefreshCw size={20} color={Colors.text} />
@@ -307,31 +327,57 @@ export default function Home() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Mensagens Recentes</Text>
+          <Text style={styles.sectionTitle}>Mensagens e Avisos Recentes</Text>
           <View style={styles.messagesList}>
             {isLoadingDashboard ? (
               <View style={styles.emptyContainer}>
                 <LoadingSquares squareSize={16} gap={6} />
               </View>
-            ) : recentMessages.length === 0 ? (
+            ) : recentMessagesAndAvisos.length === 0 ? (
               <View style={styles.emptyContainer}>
-                <Text style={styles.emptyText}>Nenhuma mensagem recente</Text>
+                <Text style={styles.emptyText}>Nenhuma mensagem ou aviso recente</Text>
               </View>
             ) : (
-              recentMessages.map((msg) => (
-                <TouchableOpacity
-                  key={msg.id}
-                  style={styles.messageCard}
-                  onPress={() => router.push('/messages')}
-                >
-                  <Text style={styles.messageIcon}>{getMessageIcon(msg)}</Text>
-                  <View style={styles.messageContent}>
-                    <Text style={styles.messageTitle} numberOfLines={1}>{msg.titulo}</Text>
-                    <Text style={styles.messageSubtitle} numberOfLines={1}>{msg.tipo}</Text>
-                  </View>
-                  <Text style={styles.messageTime}>{formatRelativeDate(msg.created_at)}</Text>
-                </TouchableOpacity>
-              ))
+              recentMessagesAndAvisos.map((item) =>
+                item.type === 'message' ? (
+                  <TouchableOpacity
+                    key={`msg-${item.data.id}`}
+                    style={styles.messageCard}
+                    onPress={() => router.push('/messages')}
+                  >
+                    <Text style={styles.messageIcon}>{getMessageIcon(item.data)}</Text>
+                    <View style={styles.messageContent}>
+                      <Text style={styles.messageTitle} numberOfLines={1}>{item.data.titulo}</Text>
+                      <Text style={styles.messageSubtitle} numberOfLines={1}>{item.data.tipo}</Text>
+                    </View>
+                    <Text style={styles.messageTime}>{formatRelativeDate(item.data.created_at)}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    key={`aviso-${item.data.id}`}
+                    style={styles.messageCard}
+                    onPress={() => router.push({ pathname: '/aviso-detail', params: { avisoId: item.data.id } })}
+                  >
+                    <Text style={styles.messageIcon}>📢</Text>
+                    <View style={styles.messageContent}>
+                      <View style={styles.messageTitleRow}>
+                        <Text style={styles.messageTitle} numberOfLines={1}>{item.data.titulo}</Text>
+                        {avisosService.isAvisoNew(item.data, lastSeenAvisosAt) && (
+                          <View style={styles.newBadge}>
+                            <Text style={styles.newBadgeText}>Novo</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.messageSubtitle} numberOfLines={1}>
+                        {item.data.tenant?.nome || 'Aviso da escola'}
+                      </Text>
+                    </View>
+                    <Text style={styles.messageTime}>
+                      {formatRelativeDate(item.data.publicado_em || item.data.created_at)}
+                    </Text>
+                  </TouchableOpacity>
+                )
+              )
             )}
           </View>
         </View>
@@ -625,6 +671,24 @@ const styles = StyleSheet.create({
   },
   messageContent: {
     flex: 1,
+  },
+  messageTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  newBadge: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  newBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: Colors.white,
+    textTransform: 'uppercase',
   },
   messageTitle: {
     fontSize: 14,

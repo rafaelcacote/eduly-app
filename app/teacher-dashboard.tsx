@@ -115,22 +115,30 @@ export default function TeacherDashboard() {
   }, [loadDashboardData]);
 
   const handleLogout = async () => {
-    Alert.alert('Sair', 'Deseja encerrar sua sessão?', [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Sair',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            setIsLoggingOut(true);
-            await logout();
-          } catch (error) {
-            setIsLoggingOut(false);
-            Alert.alert('Erro', 'Não foi possível sair agora. Tente novamente.');
-          }
-        },
-      },
-    ]);
+    const doLogout = async () => {
+      try {
+        setIsLoggingOut(true);
+        await logout();
+      } catch (error) {
+        setIsLoggingOut(false);
+        if (Platform.OS === 'web') {
+          window.alert('Não foi possível sair agora. Tente novamente.');
+        } else {
+          Alert.alert('Erro', 'Não foi possível sair agora. Tente novamente.');
+        }
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm('Deseja encerrar sua sessão?')) {
+        doLogout();
+      }
+    } else {
+      Alert.alert('Sair', 'Deseja encerrar sua sessão?', [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Sair', style: 'destructive', onPress: doLogout },
+      ]);
+    }
   };
 
   const handleOpenTurmaAlunos = (turma: Turma) => {

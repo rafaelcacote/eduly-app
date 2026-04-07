@@ -109,7 +109,7 @@ export default function Login() {
           >
             <View style={styles.iconContainer}>
               <Image
-                source={require('@/assets/images/eduly_logo_login.png')}
+                source={require('@/assets/images/logo.png')}
                 style={styles.logo}
                 contentFit="contain"
               />

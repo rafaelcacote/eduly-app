@@ -6,12 +6,20 @@ export interface Disciplina {
   sigla: string;
 }
 
+export interface School {
+  id: string;
+  nome: string;
+  logo_url?: string | null;
+}
+
 export interface Turma {
   id: string;
   nome: string;
   serie: string;
   turma_letra: string;
   ano_letivo: number;
+  school?: School;
+  escola?: { id: string; nome: string };
 }
 
 export interface Aluno {

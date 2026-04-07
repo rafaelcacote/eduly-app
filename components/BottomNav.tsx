@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { Colors } from '@/constants/colors';
-import { Home, MessageSquare, BookOpen, ClipboardList, BarChart3, Settings } from 'lucide-react-native';
+import { Home, MessageSquare, BookOpen, ClipboardList, BarChart3, User } from 'lucide-react-native';
 import { messagesService } from '@/services/messages';
 import { useAuth } from '@/context/AuthContext';
 import { useStudent } from '@/context/StudentContext';
@@ -62,17 +62,17 @@ export default function BottomNav() {
   const navItems: NavItem[] = [
     { label: 'Início', icon: Home, href: homeHref, badge: undefined },
     { label: 'Mensagens', icon: MessageSquare, href: '/messages', badge: unreadCount > 0 ? unreadCount : undefined },
-    { label: 'Exercícios', icon: BookOpen, href: '/exercises', badge: 2 },
+    { label: 'Exercícios', icon: BookOpen, href: '/exercises', badge: undefined },
     { label: 'Provas', icon: ClipboardList, href: '/exams', badge: undefined },
     { label: 'Boletim', icon: BarChart3, href: '/report', badge: undefined },
-    { label: 'Mais', icon: Settings, href: '/menu', badge: undefined },
+    { label: 'Perfil', icon: User, href: '/perfil', badge: undefined },
   ];
 
   return (
     <View style={styles.container}>
       <View style={styles.navContainer}>
         {navItems.map((item) => {
-          const isActive = pathname === item.href;
+          const isActive = pathname === item.href || (item.href === homeHref && (pathname === homeHref || pathname === '/' || pathname.startsWith('/(tabs)')));
           const IconComponent = item.icon;
           const iconColor = isActive ? Colors.primary : Colors.textMuted;
           const textColor = isActive ? Colors.primary : Colors.textMuted;
