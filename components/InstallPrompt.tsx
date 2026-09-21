@@ -22,6 +22,10 @@ type BeforeInstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 };
 
+type EdulyWindow = Window & {
+  __edulyDeferredInstallPrompt?: BeforeInstallPromptEvent | null;
+};
+
 function isWebMobile(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
 
@@ -67,11 +71,22 @@ function markDismissed() {
   }
 }
 
+function readDeferredPrompt(): BeforeInstallPromptEvent | null {
+  if (typeof window === 'undefined') return null;
+  return (window as EdulyWindow).__edulyDeferredInstallPrompt ?? null;
+}
+
+function clearDeferredPrompt() {
+  if (typeof window === 'undefined') return;
+  (window as EdulyWindow).__edulyDeferredInstallPrompt = null;
+}
+
 export function InstallPrompt() {
   const { width } = useWindowDimensions();
   const [visible, setVisible] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [showIosGuide, setShowIosGuide] = useState(false);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -81,19 +96,34 @@ export function InstallPrompt() {
 
     setIsIOS(isIosDevice());
 
-    const onBeforeInstall = (event: Event) => {
-      event.preventDefault();
-      setDeferredPrompt(event as BeforeInstallPromptEvent);
+    const adoptPrompt = (event?: BeforeInstallPromptEvent | null) => {
+      const promptEvent = event ?? readDeferredPrompt();
+      if (!promptEvent) return;
+      setDeferredPrompt(promptEvent);
       setVisible(true);
     };
 
-    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    // Evento pode ter chegado antes do React montar (script em +html.tsx)
+    adoptPrompt();
 
-    // Mostra instruções mesmo sem o evento nativo (iOS / alguns Android)
+    const onBeforeInstall = (event: Event) => {
+      event.preventDefault();
+      const promptEvent = event as BeforeInstallPromptEvent;
+      (window as EdulyWindow).__edulyDeferredInstallPrompt = promptEvent;
+      adoptPrompt(promptEvent);
+    };
+
+    const onInstallReady = () => adoptPrompt();
+
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    window.addEventListener('eduly-install-ready', onInstallReady);
+
+    // Fallback: mostra instruções manuais se o evento nativo não vier
     const timer = setTimeout(() => setVisible(true), 2500);
 
     return () => {
       window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('eduly-install-ready', onInstallReady);
       clearTimeout(timer);
     };
   }, []);
@@ -107,21 +137,29 @@ export function InstallPrompt() {
   }, [width]);
 
   const handleInstall = async () => {
-    if (!deferredPrompt) return;
-    try {
-      await deferredPrompt.prompt();
-      await deferredPrompt.userChoice;
-    } catch {
-      // usuário cancelou ou browser bloqueou
-    } finally {
-      setDeferredPrompt(null);
-      setVisible(false);
-      markDismissed();
+    // Android/Chrome: abre o diálogo nativo de instalação
+    if (deferredPrompt && !isIOS) {
+      try {
+        await deferredPrompt.prompt();
+        await deferredPrompt.userChoice;
+      } catch {
+        // usuário cancelou ou browser bloqueou
+      } finally {
+        clearDeferredPrompt();
+        setDeferredPrompt(null);
+        setVisible(false);
+        markDismissed();
+      }
+      return;
     }
+
+    // iOS: Safari não permite instalar por código — mostra o passo a passo
+    setShowIosGuide(true);
   };
 
   const handleDismiss = () => {
     setVisible(false);
+    setShowIosGuide(false);
     markDismissed();
   };
 
@@ -134,7 +172,9 @@ export function InstallPrompt() {
 
   const showPlayStore = Boolean(PLAY_STORE_URL);
   const showAppStore = Boolean(APP_STORE_URL) && isIOS;
-  const showNativeInstall = Boolean(deferredPrompt) && !isIOS;
+  const canNativeInstall = Boolean(deferredPrompt) && !isIOS;
+  // Sempre mostra "Instalar" no iOS (guia) e no Android quando o prompt nativo existir
+  const showInstallButton = isIOS || canNativeInstall;
 
   return (
     <View style={styles.overlay} pointerEvents="box-none">
@@ -161,11 +201,40 @@ export function InstallPrompt() {
         </View>
 
         {isIOS ? (
-          <Text style={styles.text}>
-            No Safari, toque em <Text style={styles.bold}>Compartilhar</Text> e depois em{' '}
-            <Text style={styles.bold}>Adicionar à Tela de Início</Text>.
-          </Text>
-        ) : showNativeInstall ? (
+          showIosGuide ? (
+            <View style={styles.guide}>
+              <Text style={styles.guideTitle}>Como instalar no iPhone</Text>
+              <View style={styles.guideStep}>
+                <Text style={styles.guideNum}>1</Text>
+                <Text style={styles.guideText}>
+                  Toque no botão <Text style={styles.bold}>Compartilhar</Text> (□↑) na barra do
+                  Safari, embaixo da tela.
+                </Text>
+              </View>
+              <View style={styles.guideStep}>
+                <Text style={styles.guideNum}>2</Text>
+                <Text style={styles.guideText}>
+                  Role e toque em <Text style={styles.bold}>Adicionar à Tela de Início</Text>.
+                </Text>
+              </View>
+              <View style={styles.guideStep}>
+                <Text style={styles.guideNum}>3</Text>
+                <Text style={styles.guideText}>
+                  Confirme em <Text style={styles.bold}>Adicionar</Text>. O ícone do Eduly
+                  aparece na tela inicial.
+                </Text>
+              </View>
+              <Text style={styles.guideHint}>
+                Se estiver no Chrome ou outro navegador, abra este site no Safari para instalar.
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.text}>
+              No iPhone, toque em <Text style={styles.bold}>Instalar</Text> para ver como
+              adicionar o Eduly à tela inicial.
+            </Text>
+          )
+        ) : canNativeInstall ? (
           <Text style={styles.text}>
             Instale o Eduly na tela inicial para abrir mais rápido, sem digitar o endereço.
           </Text>
@@ -178,9 +247,23 @@ export function InstallPrompt() {
         )}
 
         <View style={styles.buttons}>
-          {showNativeInstall && (
-            <Pressable style={styles.primaryBtn} onPress={handleInstall}>
-              <Text style={styles.primaryBtnText}>Instalar agora</Text>
+          {showInstallButton && !showIosGuide && (
+            <Pressable
+              style={styles.primaryBtn}
+              onPress={handleInstall}
+              accessibilityLabel="Instalar o Eduly"
+            >
+              <Text style={styles.primaryBtnText}>Instalar</Text>
+            </Pressable>
+          )}
+
+          {showIosGuide && (
+            <Pressable
+              style={styles.primaryBtn}
+              onPress={handleDismiss}
+              accessibilityLabel="Entendi, fechar"
+            >
+              <Text style={styles.primaryBtnText}>Entendi</Text>
             </Pressable>
           )}
 
@@ -196,9 +279,11 @@ export function InstallPrompt() {
             </Pressable>
           )}
 
-          <Pressable style={styles.dismissBtn} onPress={handleDismiss}>
-            <Text style={styles.dismissBtnText}>Agora não</Text>
-          </Pressable>
+          {!showIosGuide && (
+            <Pressable style={styles.dismissBtn} onPress={handleDismiss}>
+              <Text style={styles.dismissBtnText}>Agora não</Text>
+            </Pressable>
+          )}
         </View>
       </View>
     </View>
@@ -272,6 +357,45 @@ const styles = StyleSheet.create({
   },
   bold: {
     fontWeight: '700',
+  },
+  guide: {
+    marginBottom: 14,
+    gap: 10,
+  },
+  guideTitle: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  guideStep: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  guideNum: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: 24,
+    overflow: 'hidden',
+  },
+  guideText: {
+    flex: 1,
+    color: 'rgba(255,255,255,0.95)',
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  guideHint: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
   },
   buttons: {
     flexDirection: 'row',

@@ -30,6 +30,13 @@ export default function Root({ children }: PropsWithChildren) {
         <script
           dangerouslySetInnerHTML={{
             __html: `
+              // Captura o evento o quanto antes — o React pode montar depois dele.
+              window.__edulyDeferredInstallPrompt = null;
+              window.addEventListener('beforeinstallprompt', function(event) {
+                event.preventDefault();
+                window.__edulyDeferredInstallPrompt = event;
+                window.dispatchEvent(new Event('eduly-install-ready'));
+              });
               if ('serviceWorker' in navigator) {
                 window.addEventListener('load', function() {
                   navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function() {});
