@@ -187,7 +187,7 @@ export function InstallPrompt() {
             accessibilityIgnoresInvertColors
           />
           <View style={styles.headerText}>
-            <Text style={styles.title}>Instale o Eduly no celular</Text>
+            <Text style={styles.title}>Instale o Edully no celular</Text>
             <Text style={styles.subtitle}>Acesso rápido, como um aplicativo</Text>
           </View>
           <Pressable
@@ -220,7 +220,7 @@ export function InstallPrompt() {
               <View style={styles.guideStep}>
                 <Text style={styles.guideNum}>3</Text>
                 <Text style={styles.guideText}>
-                  Confirme em <Text style={styles.bold}>Adicionar</Text>. O ícone do Eduly
+                  Confirme em <Text style={styles.bold}>Adicionar</Text>. O ícone do Edully
                   aparece na tela inicial.
                 </Text>
               </View>
@@ -231,12 +231,12 @@ export function InstallPrompt() {
           ) : (
             <Text style={styles.text}>
               No iPhone, toque em <Text style={styles.bold}>Instalar</Text> para ver como
-              adicionar o Eduly à tela inicial.
+              adicionar o Edully à tela inicial.
             </Text>
           )
         ) : canNativeInstall ? (
           <Text style={styles.text}>
-            Instale o Eduly na tela inicial para abrir mais rápido, sem digitar o endereço.
+            Instale o Edully na tela inicial para abrir mais rápido, sem digitar o endereço.
           </Text>
         ) : (
           <Text style={styles.text}>
@@ -251,7 +251,7 @@ export function InstallPrompt() {
             <Pressable
               style={styles.primaryBtn}
               onPress={handleInstall}
-              accessibilityLabel="Instalar o Eduly"
+              accessibilityLabel="Instalar o Edully"
             >
               <Text style={styles.primaryBtnText}>Instalar</Text>
             </Pressable>
