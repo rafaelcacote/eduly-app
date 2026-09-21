@@ -75,7 +75,7 @@ function PhonePreview({ activeIndex }: { activeIndex: number }) {
               <View style={phoneStyles.tabsPage}>
                 <Text style={phoneStyles.tabsTitle}>Navegacao por Tabs</Text>
                 <View style={phoneStyles.list}>
-                  {['Inicio', 'Mensagens', 'Exercicios', 'Provas'].map((item) => (
+                  {['Inicio', 'Comunicacao', 'Exercicios', 'Provas'].map((item) => (
                     <View key={item} style={phoneStyles.itemRow}>
                       <View style={phoneStyles.avatar} />
                       <View style={phoneStyles.itemTextWrap}>
@@ -148,7 +148,7 @@ export default function BrandPage() {
       {
         icon: MessageSquare,
         title: 'Comunicação Instantânea',
-        description: 'Mensagens entre escola, professores e responsáveis sem ruído.',
+        description: 'Recados direcionados e comunicados da escola sem ruído.',
       },
       {
         icon: ClipboardList,

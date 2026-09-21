@@ -1,3 +1,4 @@
+import { AppHeader, AppHeaderAction } from '@/components/AppHeader';
 import BottomNav from '@/components/BottomNav';
 import Calendar from '@/components/Calendar';
 import { Colors } from '@/constants/colors';
@@ -5,13 +6,25 @@ import { useAuth } from '@/context/AuthContext';
 import { useStudent } from '@/context/StudentContext';
 import { Test, testsService } from '@/services/tests';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, BookOpen, Calendar as CalendarIcon, Clock, Edit, MapPin, Plus, Trash2, User, Users, X } from 'lucide-react-native';
-import React, { useCallback, useEffect, useState } from 'react';
+import {
+  BookOpen,
+  Calendar as CalendarIcon,
+  ChevronRight,
+  Clock,
+  Edit,
+  MapPin,
+  Plus,
+  Trash2,
+  User,
+  Users,
+  X,
+} from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   Modal,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -19,6 +32,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type TestStatus = 'upcoming' | 'today' | 'past';
 
@@ -26,8 +40,80 @@ interface TestWithStatus extends Test {
   status: TestStatus;
 }
 
+function parseLocalDate(dateString: string): Date {
+  if (dateString.includes('/')) {
+    const parts = dateString.split('/');
+    if (parts.length === 3) {
+      return new Date(
+        parseInt(parts[2], 10),
+        parseInt(parts[1], 10) - 1,
+        parseInt(parts[0], 10)
+      );
+    }
+  }
+
+  const parts = dateString.split('-');
+  if (parts.length === 3) {
+    return new Date(
+      parseInt(parts[0], 10),
+      parseInt(parts[1], 10) - 1,
+      parseInt(parts[2], 10)
+    );
+  }
+
+  return new Date(dateString);
+}
+
+function calculateStatus(test: Test): TestStatus {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const testDate = parseLocalDate(test.data_prova);
+  testDate.setHours(0, 0, 0, 0);
+
+  if (testDate.getTime() === today.getTime()) return 'today';
+  if (testDate < today) return 'past';
+  return 'upcoming';
+}
+
+function formatTimeRange(test: Test): string | null {
+  if (!test.horario) return null;
+
+  if (!test.duracao_minutos) return test.horario;
+
+  const [hours, minutes] = test.horario.split(':');
+  const startTime = new Date();
+  startTime.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+
+  const endTime = new Date(startTime);
+  endTime.setMinutes(endTime.getMinutes() + test.duracao_minutos);
+
+  const endHours = endTime.getHours().toString().padStart(2, '0');
+  const endMinutes = endTime.getMinutes().toString().padStart(2, '0');
+
+  return `${test.horario} – ${endHours}:${endMinutes}`;
+}
+
+function getTurmaLabel(test: Test): string {
+  if (test.turma.serie && test.turma.turma_letra) {
+    return `${test.turma.serie} ${test.turma.turma_letra}`;
+  }
+  return test.turma.nome;
+}
+
+function getStatusMeta(status: TestStatus) {
+  if (status === 'today') {
+    return { label: 'Hoje', bg: '#fef3c7', color: '#b45309' };
+  }
+  if (status === 'past') {
+    return { label: 'Realizada', bg: '#f3f4f6', color: '#6b7280' };
+  }
+  return { label: 'Próxima', bg: '#dbeafe', color: Colors.primary };
+}
+
 export default function Exams() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { selectedStudent } = useStudent();
   const [tests, setTests] = useState<TestWithStatus[]>([]);
@@ -41,83 +127,25 @@ export default function Exams() {
 
   const isTeacher = user?.type === 'teacher';
 
-  /**
-   * Parse uma data no formato YYYY-MM-DD como data local (não UTC)
-   * Isso evita problemas de timezone onde uma data pode aparecer como dia anterior
-   */
-  const parseLocalDate = (dateString: string): Date => {
-    // Se já vier formatada (DD/MM/YYYY), tenta parsear
-    if (dateString.includes('/')) {
-      const parts = dateString.split('/');
-      if (parts.length === 3) {
-        const day = parseInt(parts[0], 10);
-        const month = parseInt(parts[1], 10) - 1; // Mês é 0-indexed
-        const year = parseInt(parts[2], 10);
-        return new Date(year, month, day);
-      }
-    }
-
-    // Para formato YYYY-MM-DD, parse manualmente para evitar timezone
-    const parts = dateString.split('-');
-    if (parts.length === 3) {
-      const year = parseInt(parts[0], 10);
-      const month = parseInt(parts[1], 10) - 1; // Mês é 0-indexed
-      const day = parseInt(parts[2], 10);
-      return new Date(year, month, day);
-    }
-
-    // Fallback para o método padrão
-    return new Date(dateString);
-  };
-
-  /**
-   * Calcula o status da prova baseado na data
-   */
-  const calculateStatus = (test: Test): TestStatus => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const testDate = parseLocalDate(test.data_prova);
-    testDate.setHours(0, 0, 0, 0);
-
-    if (testDate.getTime() === today.getTime()) {
-      return 'today';
-    }
-
-    if (testDate < today) {
-      return 'past';
-    }
-
-    return 'upcoming';
-  };
-
-  /**
-   * Carrega provas da API
-   */
   const loadTests = useCallback(async () => {
     try {
       setError(null);
-      const params: any = {};
+      const params: { aluno_id?: string } = {};
 
-      // Se for responsável, filtra por aluno selecionado
       if (!isTeacher && selectedStudent?.id) {
         params.aluno_id = selectedStudent.id;
       }
 
       const data = await testsService.getTests(params);
-
-      // Adiciona status calculado a cada prova
-      const testsWithStatus: TestWithStatus[] = data.map(test => ({
-        ...test,
-        status: calculateStatus(test),
-      }));
-
-      // Ordena por data (mais próximas primeiro)
-      testsWithStatus.sort((a, b) => {
-        const dateA = parseLocalDate(a.data_prova).getTime();
-        const dateB = parseLocalDate(b.data_prova).getTime();
-        return dateA - dateB;
-      });
+      const testsWithStatus: TestWithStatus[] = data
+        .map((test) => ({
+          ...test,
+          status: calculateStatus(test),
+        }))
+        .sort(
+          (a, b) =>
+            parseLocalDate(a.data_prova).getTime() - parseLocalDate(b.data_prova).getTime()
+        );
 
       setTests(testsWithStatus);
     } catch (err: any) {
@@ -130,214 +158,116 @@ export default function Exams() {
     }
   }, [isTeacher, selectedStudent]);
 
-  /**
-   * Carrega provas ao montar o componente
-   */
   useEffect(() => {
     loadTests();
   }, [loadTests]);
 
-  /**
-   * Atualiza lista ao puxar para baixo
-   */
   const onRefresh = useCallback(() => {
     setIsRefreshing(true);
     loadTests();
   }, [loadTests]);
 
-  /**
-   * Formata data para exibição
-   */
-  const formatDate = (dateString: string): string => {
-    try {
-      // Se já vier formatada da API (data_prova_formatted), usa ela
-      if (dateString.includes('/')) {
-        return dateString;
-      }
-
-      const date = parseLocalDate(dateString);
-      if (isNaN(date.getTime())) {
-        return dateString;
-      }
-
-      const day = date.getDate().toString().padStart(2, '0');
-      const month = date.toLocaleDateString('pt-BR', { month: 'short' });
-      const year = date.getFullYear();
-      return `${day} ${month} ${year}`;
-    } catch (error) {
-      return dateString;
-    }
-  };
-
-  /**
-   * Formata horário e duração
-   */
-  const formatTimeRange = (test: Test): string => {
-    if (!test.horario) {
-      return 'Horário não informado';
-    }
-
-    if (!test.duracao_minutos) {
-      return test.horario;
-    }
-
-    const [hours, minutes] = test.horario.split(':');
-    const startTime = new Date();
-    startTime.setHours(parseInt(hours), parseInt(minutes), 0, 0);
-
-    const endTime = new Date(startTime);
-    endTime.setMinutes(endTime.getMinutes() + test.duracao_minutos);
-
-    const endHours = endTime.getHours().toString().padStart(2, '0');
-    const endMinutes = endTime.getMinutes().toString().padStart(2, '0');
-
-    return `${test.horario} - ${endHours}:${endMinutes}`;
-  };
-
-  /**
-   * Obtém os dias do mês selecionado que têm provas para o calendário
-   */
-  const getExamDays = (): number[] => {
-    const examDays: number[] = [];
+  const examDays = useMemo(() => {
     const selectedMonthIndex = selectedMonth.getMonth();
     const selectedYear = selectedMonth.getFullYear();
+    const days: number[] = [];
 
-    tests.forEach(test => {
+    tests.forEach((test) => {
       const testDate = parseLocalDate(test.data_prova);
       if (testDate.getMonth() === selectedMonthIndex && testDate.getFullYear() === selectedYear) {
-        examDays.push(testDate.getDate());
+        days.push(testDate.getDate());
       }
     });
 
-    return examDays;
-  };
+    return days;
+  }, [tests, selectedMonth]);
 
-  /**
-   * Filtra provas do mês selecionado e opcionalmente por dia
-   */
-  const getTestsForSelectedMonth = (): TestWithStatus[] => {
+  const testsForSelectedMonth = useMemo(() => {
     const selectedMonthIndex = selectedMonth.getMonth();
     const selectedYear = selectedMonth.getFullYear();
 
-    let filteredTests = tests.filter(test => {
+    return tests.filter((test) => {
       const testDate = parseLocalDate(test.data_prova);
-      return testDate.getMonth() === selectedMonthIndex && testDate.getFullYear() === selectedYear;
-    });
-
-    // Se estiver filtrando por dia, aplica o filtro adicional
-    if (filterByDay && selectedDay !== null) {
-      filteredTests = filteredTests.filter(test => {
-        const testDate = parseLocalDate(test.data_prova);
+      if (testDate.getMonth() !== selectedMonthIndex || testDate.getFullYear() !== selectedYear) {
+        return false;
+      }
+      if (filterByDay && selectedDay !== null) {
         return testDate.getDate() === selectedDay;
-      });
-    }
+      }
+      return true;
+    });
+  }, [tests, selectedMonth, filterByDay, selectedDay]);
 
-    return filteredTests;
-  };
-
-  /**
-   * Manipula o clique em um dia do calendário
-   */
   const handleDayPress = (day: number) => {
     if (filterByDay && selectedDay === day) {
-      // Se clicar no mesmo dia, desativa o filtro
       setFilterByDay(false);
       setSelectedDay(null);
-    } else {
-      // Ativa o filtro e seleciona o dia
-      setFilterByDay(true);
-      setSelectedDay(day);
+      return;
     }
+    setFilterByDay(true);
+    setSelectedDay(day);
   };
 
-  /**
-   * Desativa o filtro por dia e mostra todas as provas do mês
-   */
   const handleShowAllMonth = () => {
     setFilterByDay(false);
     setSelectedDay(null);
   };
 
-  /**
-   * Quando o mês muda, reseta o filtro por dia
-   */
   const handleMonthChange = (date: Date) => {
     setSelectedMonth(date);
     setSelectedDay(null);
     setFilterByDay(false);
   };
 
-  /**
-   * Deleta uma prova (apenas professores)
-   */
   const handleDeleteTest = async (testId: string, testTitle: string) => {
-    Alert.alert(
-      'Confirmar exclusão',
-      `Tem certeza que deseja excluir a prova "${testTitle}"?`,
-      [
-        {
-          text: 'Cancelar',
-          style: 'cancel',
+    Alert.alert('Excluir prova', `Tem certeza que deseja excluir "${testTitle}"?`, [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Excluir',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await testsService.deleteTest(testId);
+            setSelectedTest(null);
+            await loadTests();
+          } catch (err: any) {
+            Alert.alert('Erro', err.message || 'Erro ao excluir prova');
+          }
         },
-        {
-          text: 'Excluir',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await testsService.deleteTest(testId);
-              await loadTests();
-              Alert.alert('Sucesso', 'Prova excluída com sucesso!');
-            } catch (err: any) {
-              Alert.alert('Erro', err.message || 'Erro ao excluir prova');
-            }
-          },
-        },
-      ]
-    );
+      },
+    ]);
   };
 
-  /**
-   * Navega para tela de criar prova
-   */
   const handleCreateTest = () => {
     router.push('/create-exam');
   };
 
-  /**
-   * Navega para tela de editar prova
-   */
   const handleEditTest = (test: Test) => {
+    setSelectedTest(null);
     router.push({
       pathname: '/create-exam',
       params: { testId: test.id },
     });
   };
 
-  /**
-   * Abre modal com detalhes da prova
-   */
-  const handleViewTest = (test: TestWithStatus) => {
-    setSelectedTest(test);
-  };
-
-  /**
-   * Fecha o modal de detalhes
-   */
-  const handleCloseModal = () => {
-    setSelectedTest(null);
-  };
-
+  const sectionTitle = useMemo(() => {
+    if (filterByDay && selectedDay !== null) {
+      return `Provas do dia ${selectedDay}`;
+    }
+    if (testsForSelectedMonth.length > 0) {
+      const monthName = selectedMonth.toLocaleDateString('pt-BR', {
+        month: 'long',
+        year: 'numeric',
+      });
+      return `Provas de ${monthName.charAt(0).toUpperCase() + monthName.slice(1)}`;
+    }
+    return 'Provas';
+  }, [filterByDay, selectedDay, testsForSelectedMonth.length, selectedMonth]);
 
   if (isLoading && !isRefreshing) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={20} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Provas</Text>
-          <View style={styles.placeholder} />
-        </View>
+        <AppHeader title="Provas" />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={styles.loadingText}>Carregando provas...</Text>
@@ -347,40 +277,32 @@ export default function Exams() {
     );
   }
 
-  // Obtém provas do mês selecionado
-  const testsForSelectedMonth = getTestsForSelectedMonth();
-  const examDays = getExamDays();
-
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Provas</Text>
-        {isTeacher && (
-          <TouchableOpacity onPress={handleCreateTest} style={styles.addButton}>
-            <Plus size={20} color={Colors.primary} />
-          </TouchableOpacity>
-        )}
-        {!isTeacher && <View style={styles.placeholder} />}
-      </View>
+      <AppHeader
+        title="Provas"
+        right={
+          isTeacher ? (
+            <AppHeaderAction onPress={handleCreateTest} accessibilityLabel="Criar prova">
+              <Plus size={20} color={Colors.white} />
+            </AppHeaderAction>
+          ) : undefined
+        }
+      />
 
-      {error && (
+      {error ? (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
           <TouchableOpacity onPress={loadTests} style={styles.retryButton}>
             <Text style={styles.retryButtonText}>Tentar novamente</Text>
           </TouchableOpacity>
         </View>
-      )}
+      ) : null}
 
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
-        }
+        refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />}
       >
         <Calendar
           selectedDate={selectedMonth}
@@ -391,34 +313,18 @@ export default function Exams() {
         />
 
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>
-            {filterByDay && selectedDay !== null
-              ? `Provas do dia ${selectedDay}`
-              : testsForSelectedMonth.length > 0
-                ? (() => {
-                  const monthName = selectedMonth.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-                  return `Provas de ${monthName.charAt(0).toUpperCase() + monthName.slice(1)}`;
-                })()
-                : 'Provas'}
-          </Text>
-          {filterByDay && selectedDay !== null && (
-            <TouchableOpacity
-              onPress={handleShowAllMonth}
-              style={styles.filterButton}
-            >
-              <Text style={styles.filterButtonText}>
-                Ver todas do mês
-              </Text>
+          <Text style={styles.sectionTitle}>{sectionTitle}</Text>
+          {filterByDay && selectedDay !== null ? (
+            <TouchableOpacity onPress={handleShowAllMonth} style={styles.filterButton}>
+              <Text style={styles.filterButtonText}>Ver mês</Text>
             </TouchableOpacity>
-          )}
+          ) : null}
         </View>
 
         {tests.length === 0 ? (
           <View style={styles.emptyContainer}>
-            <CalendarIcon size={48} color={Colors.textMuted} />
-            <Text style={styles.emptyText}>
-              Nenhuma prova encontrada
-            </Text>
+            <CalendarIcon size={40} color={Colors.textMuted} />
+            <Text style={styles.emptyText}>Nenhuma prova encontrada</Text>
             <Text style={styles.emptySubtext}>
               {isTeacher
                 ? 'Crie uma nova prova usando o botão + no topo'
@@ -427,7 +333,7 @@ export default function Exams() {
           </View>
         ) : testsForSelectedMonth.length === 0 ? (
           <View style={styles.emptyContainer}>
-            <CalendarIcon size={48} color={Colors.textMuted} />
+            <CalendarIcon size={40} color={Colors.textMuted} />
             <Text style={styles.emptyText}>
               {filterByDay && selectedDay !== null
                 ? `Nenhuma prova no dia ${selectedDay}`
@@ -440,265 +346,242 @@ export default function Exams() {
             </Text>
           </View>
         ) : (
-          testsForSelectedMonth.map((test) => (
-            <TouchableOpacity
-              key={test.id}
-              style={styles.examCard}
-              onPress={() => handleViewTest(test)}
-            >
-              <View style={styles.examHeader}>
-                <View style={styles.examHeaderLeft}>
-                  <Text style={styles.examSubject}>{test.titulo}</Text>
-                  <Text style={styles.examTeacher}>
-                    {test.professor.usuario.nome_completo}
+          testsForSelectedMonth.map((test) => {
+            const date = parseLocalDate(test.data_prova);
+            const dayNum = date.getDate().toString().padStart(2, '0');
+            const monthShort = date
+              .toLocaleDateString('pt-BR', { month: 'short' })
+              .replace('.', '');
+            const timeRange = formatTimeRange(test);
+            const status = getStatusMeta(test.status);
+            const metaParts = [
+              test.disciplina?.nome,
+              timeRange,
+              test.sala ? `Sala ${test.sala}` : null,
+            ].filter(Boolean);
+
+            return (
+              <TouchableOpacity
+                key={test.id}
+                style={[styles.examCard, test.status === 'today' && styles.examCardToday]}
+                onPress={() => setSelectedTest(test)}
+                activeOpacity={0.78}
+                accessibilityRole="button"
+                accessibilityLabel={`${test.titulo}. Toque para ver detalhes`}
+              >
+                <View
+                  style={[
+                    styles.dateBadge,
+                    test.status === 'today' && styles.dateBadgeToday,
+                    test.status === 'past' && styles.dateBadgePast,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.dateDay,
+                      test.status === 'today' && styles.dateDayToday,
+                      test.status === 'past' && styles.dateDayPast,
+                    ]}
+                  >
+                    {dayNum}
                   </Text>
-                  <Text style={styles.examDiscipline}>
-                    {test.disciplina.nome} • {test.turma.serie && test.turma.turma_letra ? `${test.turma.serie} ${test.turma.turma_letra}` : test.turma.nome}
+                  <Text
+                    style={[
+                      styles.dateMonth,
+                      test.status === 'today' && styles.dateMonthToday,
+                      test.status === 'past' && styles.dateMonthPast,
+                    ]}
+                  >
+                    {monthShort}
                   </Text>
                 </View>
-                <View style={styles.examDateContainer}>
-                  <Text style={styles.examDate}>
-                    {test.data_prova_formatted || formatDate(test.data_prova)}
+
+                <View style={styles.examBody}>
+                  <View style={styles.examTitleRow}>
+                    <Text style={styles.examTitle} numberOfLines={2}>
+                      {test.titulo}
+                    </Text>
+                    {test.status === 'today' ? (
+                      <View style={[styles.statusChip, { backgroundColor: status.bg }]}>
+                        <Text style={[styles.statusChipText, { color: status.color }]}>
+                          {status.label}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+
+                  <Text style={styles.examMeta} numberOfLines={1}>
+                    {metaParts.join(' · ')}
                   </Text>
-                  {test.status === 'today' && (
-                    <View style={styles.todayBadge}>
-                      <Text style={styles.todayBadgeText}>Hoje</Text>
-                    </View>
+
+                  {!!test.descricao?.trim() && (
+                    <Text style={styles.examHint} numberOfLines={1}>
+                      {test.descricao.trim()}
+                    </Text>
                   )}
                 </View>
-              </View>
 
-              {test.descricao && (
-                <View style={styles.examDescription}>
-                  <Text style={styles.examDescriptionText}>{test.descricao}</Text>
-                </View>
-              )}
-
-              <View style={styles.examDetails}>
-                {test.horario && (
-                  <View style={styles.examDetailRow}>
-                    <Clock size={16} color={Colors.textMuted} />
-                    <Text style={styles.examDetailText}>
-                      {formatTimeRange(test)}
-                    </Text>
-                  </View>
-                )}
-                {test.sala && (
-                  <View style={styles.examDetailRow}>
-                    <MapPin size={16} color={Colors.textMuted} />
-                    <Text style={styles.examDetailText}>{test.sala}</Text>
-                  </View>
-                )}
-                {test.duracao_minutos && (
-                  <View style={styles.examDetailRow}>
-                    <Clock size={16} color={Colors.textMuted} />
-                    <Text style={styles.examDetailText}>
-                      Duração: {test.duracao_minutos} minutos
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              {isTeacher && (
-                <View style={styles.examActions}>
-                  <TouchableOpacity
-                    onPress={() => handleEditTest(test)}
-                    style={styles.actionButton}
-                  >
-                    <Edit size={16} color={Colors.primary} />
-                    <Text style={styles.actionButtonText}>Editar</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => handleDeleteTest(test.id, test.titulo)}
-                    style={[styles.actionButton, styles.deleteButton]}
-                  >
-                    <Trash2 size={16} color={Colors.error} />
-                    <Text style={[styles.actionButtonText, styles.deleteButtonText]}>Excluir</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </TouchableOpacity>
-          ))
+                <ChevronRight size={18} color={Colors.textMuted} />
+              </TouchableOpacity>
+            );
+          })
         )}
       </ScrollView>
 
       <BottomNav />
 
-      {/* Modal de detalhes da prova */}
       <Modal
         visible={selectedTest !== null}
         transparent
-        animationType="fade"
-        onRequestClose={handleCloseModal}
+        animationType="slide"
+        onRequestClose={() => setSelectedTest(null)}
       >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={handleCloseModal}
-        >
-          <View style={styles.modalContent}>
-            {selectedTest && (
-              <View style={styles.modalInnerContainer}>
-                <View style={styles.modalHeader}>
-                  <View style={styles.modalHeaderLeft}>
-                    <Text style={styles.modalTitle}>{selectedTest.titulo}</Text>
-                    {selectedTest.status === 'today' && (
-                      <View style={styles.modalTodayBadge}>
-                        <Text style={styles.modalTodayBadgeText}>Hoje</Text>
-                      </View>
-                    )}
-                    {selectedTest.status === 'upcoming' && (
-                      <View style={styles.modalUpcomingBadge}>
-                        <Text style={styles.modalUpcomingBadgeText}>Próxima</Text>
-                      </View>
-                    )}
-                    {selectedTest.status === 'past' && (
-                      <View style={styles.modalPastBadge}>
-                        <Text style={styles.modalPastBadgeText}>Realizada</Text>
-                      </View>
-                    )}
+        <View style={styles.sheetRoot}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setSelectedTest(null)} />
+
+          {selectedTest ? (
+            <View
+              style={[
+                styles.sheet,
+                { paddingBottom: Math.max(insets.bottom, 16) },
+              ]}
+            >
+              <View style={styles.sheetHandle} />
+
+              <View style={styles.sheetHeader}>
+                <View style={styles.sheetHeaderText}>
+                  <View style={styles.sheetBadges}>
+                    {(() => {
+                      const status = getStatusMeta(selectedTest.status);
+                      return (
+                        <View style={[styles.statusChip, { backgroundColor: status.bg }]}>
+                          <Text style={[styles.statusChipText, { color: status.color }]}>
+                            {status.label}
+                          </Text>
+                        </View>
+                      );
+                    })()}
+                    <Text style={styles.sheetDiscipline} numberOfLines={1}>
+                      {selectedTest.disciplina.nome}
+                    </Text>
                   </View>
-                  <TouchableOpacity onPress={handleCloseModal} style={styles.modalCloseButton}>
-                    <X size={24} color={Colors.textMuted} />
-                  </TouchableOpacity>
+                  <Text style={styles.sheetTitle}>{selectedTest.titulo}</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setSelectedTest(null)}
+                  style={styles.sheetClose}
+                  accessibilityLabel="Fechar"
+                >
+                  <X size={20} color={Colors.textMuted} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                style={styles.sheetScroll}
+                contentContainerStyle={styles.sheetScrollContent}
+                showsVerticalScrollIndicator={false}
+                bounces={false}
+              >
+                <View style={styles.factGrid}>
+                  <View style={styles.factCard}>
+                    <CalendarIcon size={16} color={Colors.primary} />
+                    <Text style={styles.factLabel}>Data</Text>
+                    <Text style={styles.factValue}>
+                      {selectedTest.data_prova_formatted ||
+                        parseLocalDate(selectedTest.data_prova).toLocaleDateString('pt-BR', {
+                          day: '2-digit',
+                          month: 'short',
+                          year: 'numeric',
+                        })}
+                    </Text>
+                  </View>
+
+                  <View style={styles.factCard}>
+                    <Clock size={16} color={Colors.primary} />
+                    <Text style={styles.factLabel}>Horário</Text>
+                    <Text style={styles.factValue}>
+                      {formatTimeRange(selectedTest) || 'Não informado'}
+                    </Text>
+                  </View>
+
+                  <View style={styles.factCard}>
+                    <MapPin size={16} color={Colors.primary} />
+                    <Text style={styles.factLabel}>Sala</Text>
+                    <Text style={styles.factValue}>{selectedTest.sala || '—'}</Text>
+                  </View>
+
+                  <View style={styles.factCard}>
+                    <Clock size={16} color={Colors.primary} />
+                    <Text style={styles.factLabel}>Duração</Text>
+                    <Text style={styles.factValue}>
+                      {selectedTest.duracao_minutos
+                        ? `${selectedTest.duracao_minutos} min`
+                        : '—'}
+                    </Text>
+                  </View>
                 </View>
 
-                <ScrollView
-                  style={styles.modalScrollView}
-                  contentContainerStyle={styles.modalScrollContent}
-                  showsVerticalScrollIndicator={true}
-                  nestedScrollEnabled={true}
-                >
-                  {selectedTest.descricao && (
-                    <View style={styles.modalSection}>
-                      <Text style={styles.modalSectionTitle}>Descrição</Text>
-                      <Text style={styles.modalDescription}>{selectedTest.descricao}</Text>
-                    </View>
-                  )}
-
-                  <View style={styles.modalSection}>
-                    <Text style={styles.modalSectionTitle}>Informações</Text>
-
-                    <View style={styles.modalInfoRow}>
-                      <View style={styles.modalInfoIcon}>
-                        <CalendarIcon size={20} color={Colors.primary} />
-                      </View>
-                      <View style={styles.modalInfoContent}>
-                        <Text style={styles.modalInfoLabel}>Data</Text>
-                        <Text style={styles.modalInfoValue}>
-                          {selectedTest.data_prova_formatted || formatDate(selectedTest.data_prova)}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {selectedTest.horario && (
-                      <View style={styles.modalInfoRow}>
-                        <View style={styles.modalInfoIcon}>
-                          <Clock size={20} color={Colors.primary} />
-                        </View>
-                        <View style={styles.modalInfoContent}>
-                          <Text style={styles.modalInfoLabel}>Horário</Text>
-                          <Text style={styles.modalInfoValue}>
-                            {formatTimeRange(selectedTest)}
-                          </Text>
-                        </View>
-                      </View>
-                    )}
-
-                    {selectedTest.duracao_minutos && (
-                      <View style={styles.modalInfoRow}>
-                        <View style={styles.modalInfoIcon}>
-                          <Clock size={20} color={Colors.primary} />
-                        </View>
-                        <View style={styles.modalInfoContent}>
-                          <Text style={styles.modalInfoLabel}>Duração</Text>
-                          <Text style={styles.modalInfoValue}>
-                            {selectedTest.duracao_minutos} minutos
-                          </Text>
-                        </View>
-                      </View>
-                    )}
-
-                    {selectedTest.sala && (
-                      <View style={styles.modalInfoRow}>
-                        <View style={styles.modalInfoIcon}>
-                          <MapPin size={20} color={Colors.primary} />
-                        </View>
-                        <View style={styles.modalInfoContent}>
-                          <Text style={styles.modalInfoLabel}>Sala</Text>
-                          <Text style={styles.modalInfoValue}>{selectedTest.sala}</Text>
-                        </View>
-                      </View>
-                    )}
-
-                    <View style={styles.modalInfoRow}>
-                      <View style={styles.modalInfoIcon}>
-                        <BookOpen size={20} color={Colors.primary} />
-                      </View>
-                      <View style={styles.modalInfoContent}>
-                        <Text style={styles.modalInfoLabel}>Disciplina</Text>
-                        <Text style={styles.modalInfoValue}>{selectedTest.disciplina.nome}</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.modalInfoRow}>
-                      <View style={styles.modalInfoIcon}>
-                        <Users size={20} color={Colors.primary} />
-                      </View>
-                      <View style={styles.modalInfoContent}>
-                        <Text style={styles.modalInfoLabel}>Turma</Text>
-                        <Text style={styles.modalInfoValue}>
-                          {selectedTest.turma.serie && selectedTest.turma.turma_letra 
-                            ? `${selectedTest.turma.serie} ${selectedTest.turma.turma_letra}` 
-                            : selectedTest.turma.nome}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.modalInfoRow}>
-                      <View style={styles.modalInfoIcon}>
-                        <User size={20} color={Colors.primary} />
-                      </View>
-                      <View style={styles.modalInfoContent}>
-                        <Text style={styles.modalInfoLabel}>Professor</Text>
-                        <Text style={styles.modalInfoValue}>
-                          {selectedTest.professor.usuario.nome_completo}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                </ScrollView>
-
-                {isTeacher && (
-                  <View style={styles.modalActions}>
-                    <TouchableOpacity
-                      onPress={() => {
-                        handleCloseModal();
-                        handleEditTest(selectedTest);
-                      }}
-                      style={styles.modalActionButton}
-                    >
-                      <Edit size={18} color={Colors.primary} />
-                      <Text style={styles.modalActionButtonText}>Editar</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => {
-                        handleCloseModal();
-                        handleDeleteTest(selectedTest.id, selectedTest.titulo);
-                      }}
-                      style={[styles.modalActionButton, styles.modalDeleteButton]}
-                    >
-                      <Trash2 size={18} color={Colors.error} />
-                      <Text style={[styles.modalActionButtonText, styles.modalDeleteButtonText]}>
-                        Excluir
-                      </Text>
-                    </TouchableOpacity>
+                {!!selectedTest.descricao?.trim() && (
+                  <View style={styles.descBlock}>
+                    <Text style={styles.descTitle}>Sobre a prova</Text>
+                    <Text style={styles.descBody}>{selectedTest.descricao.trim()}</Text>
                   </View>
                 )}
-              </View>
-            )}
-          </View>
-        </TouchableOpacity>
+
+                <View style={styles.peopleBlock}>
+                  <View style={styles.peopleRow}>
+                    <View style={styles.peopleIcon}>
+                      <BookOpen size={16} color={Colors.primary} />
+                    </View>
+                    <View style={styles.peopleText}>
+                      <Text style={styles.peopleLabel}>Disciplina</Text>
+                      <Text style={styles.peopleValue}>{selectedTest.disciplina.nome}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.peopleRow}>
+                    <View style={styles.peopleIcon}>
+                      <Users size={16} color={Colors.primary} />
+                    </View>
+                    <View style={styles.peopleText}>
+                      <Text style={styles.peopleLabel}>Turma</Text>
+                      <Text style={styles.peopleValue}>{getTurmaLabel(selectedTest)}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.peopleRow}>
+                    <View style={styles.peopleIcon}>
+                      <User size={16} color={Colors.primary} />
+                    </View>
+                    <View style={styles.peopleText}>
+                      <Text style={styles.peopleLabel}>Professor</Text>
+                      <Text style={styles.peopleValue}>
+                        {selectedTest.professor.usuario.nome_completo}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              </ScrollView>
+
+              {isTeacher ? (
+                <View style={styles.sheetActions}>
+                  <TouchableOpacity
+                    onPress={() => handleEditTest(selectedTest)}
+                    style={styles.sheetActionPrimary}
+                  >
+                    <Edit size={16} color={Colors.white} />
+                    <Text style={styles.sheetActionPrimaryText}>Editar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => handleDeleteTest(selectedTest.id, selectedTest.titulo)}
+                    style={styles.sheetActionDanger}
+                  >
+                    <Trash2 size={16} color={Colors.error} />
+                    <Text style={styles.sheetActionDangerText}>Excluir</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
       </Modal>
     </View>
   );
@@ -708,36 +591,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
-  },
-  header: {
-    backgroundColor: Colors.white,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  backButton: {
-    padding: 8,
-    borderRadius: 8,
-  },
-  headerTitle: {
-    flex: 1,
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: Colors.text,
-    textAlign: 'center',
-  },
-  placeholder: {
-    width: 36,
-  },
-  addButton: {
-    padding: 8,
-    borderRadius: 8,
   },
   loadingContainer: {
     flex: 1,
@@ -800,18 +653,17 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingBottom: 100,
-    gap: 16,
+    gap: 12,
   },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 8,
-    marginBottom: 4,
+    marginTop: 4,
   },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 17,
+    fontWeight: '700',
     color: Colors.text,
     flex: 1,
   },
@@ -828,273 +680,283 @@ const styles = StyleSheet.create({
   },
   examCard: {
     backgroundColor: Colors.white,
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     borderWidth: 1,
     borderColor: Colors.border,
-  },
-  examHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
+    alignItems: 'center',
+    gap: 12,
   },
-  examHeaderLeft: {
-    flex: 1,
-    marginRight: 12,
+  examCardToday: {
+    borderColor: '#fcd34d',
+    backgroundColor: '#fffbeb',
   },
-  examSubject: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: Colors.text,
-    marginBottom: 4,
-  },
-  examTeacher: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginBottom: 2,
-  },
-  examDiscipline: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 2,
-  },
-  examDateContainer: {
-    alignItems: 'flex-end',
-  },
-  examDate: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: Colors.primary,
-    marginBottom: 4,
-  },
-  todayBadge: {
-    backgroundColor: Colors.warning,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+  dateBadge: {
+    width: 52,
+    paddingVertical: 8,
     borderRadius: 12,
+    backgroundColor: '#fee2e2',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  todayBadgeText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: Colors.white,
+  dateBadgeToday: {
+    backgroundColor: '#fef3c7',
   },
-  examDescription: {
-    marginBottom: 12,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+  dateBadgePast: {
+    backgroundColor: '#f3f4f6',
   },
-  examDescriptionText: {
-    fontSize: 14,
-    color: Colors.text,
-    lineHeight: 20,
+  dateDay: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#dc2626',
+    lineHeight: 22,
   },
-  examDetails: {
+  dateDayToday: {
+    color: '#b45309',
+  },
+  dateDayPast: {
+    color: '#6b7280',
+  },
+  dateMonth: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#dc2626',
+    textTransform: 'uppercase',
+    marginTop: 1,
+  },
+  dateMonthToday: {
+    color: '#b45309',
+  },
+  dateMonthPast: {
+    color: '#6b7280',
+  },
+  examBody: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  examTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: 8,
   },
-  examDetailRow: {
+  examTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.text,
+    letterSpacing: -0.2,
+  },
+  examMeta: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    fontWeight: '500',
+  },
+  examHint: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  statusChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  statusChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  sheetRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  sheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  sheet: {
+    backgroundColor: Colors.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '88%',
+    paddingTop: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    elevation: 16,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: '#d1d5db',
+    marginBottom: 8,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  sheetHeaderText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 6,
+  },
+  sheetBadges: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  examDetailText: {
-    fontSize: 14,
+  sheetDiscipline: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
     color: Colors.textMuted,
   },
-  examActions: {
+  sheetTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: Colors.text,
+    letterSpacing: -0.3,
+    lineHeight: 26,
+  },
+  sheetClose: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.muted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetScroll: {
+    flexGrow: 0,
+  },
+  sheetScrollContent: {
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+    gap: 16,
+  },
+  factGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  factCard: {
+    width: '47.5%',
+    flexGrow: 1,
+    backgroundColor: '#f8fafc',
+    borderRadius: 14,
+    padding: 12,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  factLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textMuted,
+    marginTop: 2,
+  },
+  factValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.text,
+  },
+  descBlock: {
+    gap: 8,
+  },
+  descTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.text,
+  },
+  descBody: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: Colors.textSecondary,
+  },
+  peopleBlock: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingVertical: 4,
+    marginBottom: 4,
+  },
+  peopleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 12,
-    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  peopleIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: Colors.primary + '14',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  peopleText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  peopleLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textMuted,
+  },
+  peopleValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.text,
+    marginTop: 1,
+  },
+  sheetActions: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 20,
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
   },
-  actionButton: {
+  sheetActionPrimary: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: Colors.muted,
-  },
-  deleteButton: {
-    backgroundColor: '#fee2e2',
-  },
-  actionButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  deleteButtonText: {
-    color: Colors.error,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    backgroundColor: Colors.white,
-    borderRadius: 20,
-    width: '100%',
-    maxWidth: 500,
-    maxHeight: '85%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 10,
-    overflow: 'hidden',
-  },
-  modalInnerContainer: {
-    flexDirection: 'column',
-    minHeight: 200,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    padding: 20,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  modalHeaderLeft: {
-    flex: 1,
-    marginRight: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 8,
-    flexWrap: 'wrap',
-  },
-  modalTitle: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: Colors.text,
-    flex: 1,
-  },
-  modalCloseButton: {
-    padding: 4,
-    borderRadius: 8,
-  },
-  modalTodayBadge: {
-    backgroundColor: Colors.warning,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  modalTodayBadgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: Colors.white,
-  },
-  modalUpcomingBadge: {
     backgroundColor: Colors.primary,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 13,
     borderRadius: 12,
   },
-  modalUpcomingBadgeText: {
-    fontSize: 11,
-    fontWeight: '600',
+  sheetActionPrimaryText: {
+    fontSize: 14,
+    fontWeight: '700',
     color: Colors.white,
   },
-  modalPastBadge: {
-    backgroundColor: Colors.textMuted,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  modalPastBadgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: Colors.white,
-  },
-  modalScrollView: {
-    maxHeight: Dimensions.get('window').height * 0.45,
-    minHeight: 200,
-  },
-  modalScrollContent: {
-    paddingBottom: 20,
-    flexGrow: 1,
-  },
-  modalSection: {
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  modalSectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: Colors.text,
-    marginBottom: 12,
-  },
-  modalDescription: {
-    fontSize: 15,
-    color: Colors.text,
-    lineHeight: 22,
-  },
-  modalInfoRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 16,
-  },
-  modalInfoIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: Colors.primary + '15',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  modalInfoContent: {
-    flex: 1,
-  },
-  modalInfoLabel: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginBottom: 4,
-    fontWeight: '500',
-  },
-  modalInfoValue: {
-    fontSize: 15,
-    color: Colors.text,
-    fontWeight: '500',
-  },
-  modalActions: {
-    flexDirection: 'row',
-    gap: 12,
-    padding: 20,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  modalActionButton: {
-    flex: 1,
+  sheetActionDanger: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    paddingVertical: 12,
+    backgroundColor: '#fef2f2',
+    paddingVertical: 13,
     paddingHorizontal: 16,
     borderRadius: 12,
-    backgroundColor: Colors.muted,
+    borderWidth: 1,
+    borderColor: '#fecaca',
   },
-  modalDeleteButton: {
-    backgroundColor: '#fee2e2',
-  },
-  modalActionButtonText: {
+  sheetActionDangerText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  modalDeleteButtonText: {
+    fontWeight: '700',
     color: Colors.error,
   },
 });
-

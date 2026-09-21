@@ -1,10 +1,12 @@
+import { AppHeader } from '@/components/AppHeader';
 import BottomNav from '@/components/BottomNav';
+import { MESSAGE_TYPE_LABELS, TypeIcon } from '@/components/TypeIcon';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { messagesService, MessageType, MessagePriority } from '@/services/messages';
 import { teachersService, Turma, Aluno } from '@/services/teachers';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { ArrowLeft, Send, Users, User } from 'lucide-react-native';
+import { Send, Users, User } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -88,12 +90,12 @@ export default function SendMessage() {
   const handleSend = async () => {
     // Validações
     if (!titulo.trim()) {
-      Alert.alert('Atenção', 'Por favor, preencha o título da mensagem');
+      Alert.alert('Atenção', 'Por favor, preencha o título do recado');
       return;
     }
 
     if (!conteudo.trim()) {
-      Alert.alert('Atenção', 'Por favor, preencha o conteúdo da mensagem');
+      Alert.alert('Atenção', 'Por favor, preencha o conteúdo do recado');
       return;
     }
 
@@ -118,23 +120,38 @@ export default function SendMessage() {
           tipo,
           prioridade,
         });
-        Alert.alert('Sucesso', 'Mensagem enviada para a turma com sucesso!', [
+        Alert.alert('Sucesso', 'Recado enviado para a turma com sucesso!', [
           { text: 'OK', onPress: () => router.back() },
         ]);
       } else if (recipientType === 'aluno' && selectedAluno) {
-        await messagesService.sendMessageToStudent({
+        const created = await messagesService.sendMessageToStudent({
           aluno_id: selectedAluno.id,
           titulo: titulo.trim(),
           conteudo: conteudo.trim(),
           tipo,
           prioridade,
         });
-        Alert.alert('Sucesso', 'Mensagem enviada para o aluno com sucesso!', [
-          { text: 'OK', onPress: () => router.back() },
+        Alert.alert('Sucesso', 'Recado enviado para o aluno com sucesso!', [
+          {
+            text: 'OK',
+            onPress: () => {
+              if (created?.conversa_id || created?.id) {
+                router.replace({
+                  pathname: '/message-detail',
+                  params: {
+                    ...(created.conversa_id ? { conversaId: created.conversa_id } : {}),
+                    ...(created.id ? { messageId: created.id } : {}),
+                  },
+                });
+                return;
+              }
+              router.back();
+            },
+          },
         ]);
       }
     } catch (error: any) {
-      Alert.alert('Erro', error.message || 'Erro ao enviar mensagem');
+      Alert.alert('Erro', error.message || 'Erro ao enviar recado');
     } finally {
       setIsSending(false);
     }
@@ -143,13 +160,7 @@ export default function SendMessage() {
   if (isLoading) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={20} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Enviar Mensagem</Text>
-          <View style={styles.placeholder} />
-        </View>
+        <AppHeader title="Enviar Recado" />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={styles.loadingText}>Carregando...</Text>
@@ -161,18 +172,15 @@ export default function SendMessage() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Enviar Mensagem</Text>
-        <View style={styles.placeholder} />
-      </View>
+      <AppHeader title="Enviar Recado" />
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         {/* Seletor de tipo de destinatário */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Destinatário</Text>
+          <Text style={styles.sectionHint}>
+            Recados são enviados para uma turma ou aluno específico. Comunicados da escola são publicados separadamente.
+          </Text>
           <View style={styles.recipientTypeSelector}>
             <TouchableOpacity
               style={[
@@ -248,7 +256,7 @@ export default function SendMessage() {
           <Text style={styles.label}>Título *</Text>
           <TextInput
             style={styles.input}
-            placeholder="Digite o título da mensagem"
+            placeholder="Digite o título do recado"
             placeholderTextColor={Colors.textMuted}
             value={titulo}
             onChangeText={setTitulo}
@@ -260,7 +268,7 @@ export default function SendMessage() {
           <Text style={styles.label}>Conteúdo *</Text>
           <TextInput
             style={[styles.input, styles.textArea]}
-            placeholder="Digite o conteúdo da mensagem"
+            placeholder="Digite o conteúdo do recado"
             placeholderTextColor={Colors.textMuted}
             value={conteudo}
             onChangeText={setConteudo}
@@ -276,11 +284,14 @@ export default function SendMessage() {
             {(['informativo', 'atencao', 'aviso', 'lembrete'] as MessageType[]).map((t) => (
               <TouchableOpacity
                 key={t}
-                style={[styles.optionButton, tipo === t && styles.optionButtonActive]}
+                style={[styles.typeOption, tipo === t && styles.typeOptionActive]}
                 onPress={() => setTipo(t)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: tipo === t }}
               >
-                <Text style={[styles.optionText, tipo === t && styles.optionTextActive]}>
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
+                <TypeIcon kind={t} size="sm" />
+                <Text style={[styles.typeOptionText, tipo === t && styles.typeOptionTextActive]}>
+                  {MESSAGE_TYPE_LABELS[t]}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -314,7 +325,7 @@ export default function SendMessage() {
           ) : (
             <>
               <Send size={20} color={Colors.white} />
-              <Text style={styles.sendButtonText}>Enviar Mensagem</Text>
+              <Text style={styles.sendButtonText}>Enviar Recado</Text>
             </>
           )}
         </TouchableOpacity>
@@ -446,6 +457,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: Colors.text,
+    marginBottom: 4,
+  },
+  sectionHint: {
+    fontSize: 13,
+    color: Colors.textMuted,
+    lineHeight: 18,
     marginBottom: 12,
   },
   recipientTypeSelector: {
@@ -522,6 +539,30 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
+  },
+  typeOption: {
+    width: '47%',
+    flexGrow: 1,
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: Colors.white,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+  },
+  typeOptionActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.background,
+  },
+  typeOptionText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  typeOptionTextActive: {
+    color: Colors.primary,
   },
   optionButton: {
     paddingVertical: 10,

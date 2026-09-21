@@ -1,0 +1,20 @@
+name: edully-mobile
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        EXPO_PUBLIC_API_URL: ${EXPO_PUBLIC_API_URL:-https://demo.agendaedully.com.br}
+    image: edully-mobile:latest
+    restart: unless-stopped
+    ports:
+      # Host Nginx (CloudPanel) → este container
+      - "127.0.0.1:8084:80"
+    networks:
+      - edully_mobile
+
+networks:
+  edully_mobile:
+    name: edully_mobile

@@ -1,10 +1,11 @@
+import { AppHeader } from '@/components/AppHeader';
 import BottomNav from '@/components/BottomNav';
+import { SuccessModal } from '@/components/SuccessModal';
 import { Colors } from '@/constants/colors';
-import { useAuth } from '@/context/AuthContext';
-import { testsService, Test } from '@/services/tests';
 import { teachersService, Disciplina, Turma } from '@/services/teachers';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { ArrowLeft, Calendar, Clock, MapPin, Save } from 'lucide-react-native';
+import { testsService } from '@/services/tests';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Calendar, Clock, MapPin, Save } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -18,12 +19,20 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-// Usando input de data nativo
+
+function parseLocalISODate(value: string): Date {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [y, m, d] = value.split('-').map((part) => Number.parseInt(part, 10));
+    return new Date(y, m - 1, d, 12, 0, 0);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return new Date();
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 12, 0, 0);
+}
 
 export default function CreateExam() {
   const router = useRouter();
   const params = useLocalSearchParams<{ testId?: string }>();
-  const { user } = useAuth();
   const isEditing = !!params.testId;
 
   const [titulo, setTitulo] = useState('');
@@ -41,57 +50,67 @@ export default function CreateExam() {
   const [isSaving, setIsSaving] = useState(false);
   const [showDisciplinaSelector, setShowDisciplinaSelector] = useState(false);
   const [showTurmaSelector, setShowTurmaSelector] = useState(false);
+  const [successVisible, setSuccessVisible] = useState(false);
+  const [successTitle, setSuccessTitle] = useState('Tudo certo!');
+  const [successMessage, setSuccessMessage] = useState('');
 
   useEffect(() => {
-    loadData();
-    if (isEditing && params.testId) {
-      loadTest(params.testId);
-    }
+    const bootstrap = async () => {
+      try {
+        setIsLoading(true);
+        const [disciplinasData, turmasData] = await Promise.all([
+          teachersService.getDisciplinas(),
+          teachersService.getTurmas(),
+        ]);
+        setDisciplinas(disciplinasData);
+        setTurmas(turmasData);
+
+        if (isEditing && params.testId) {
+          const test = await testsService.getTestById(params.testId);
+          setTitulo(test.titulo);
+          setDescricao(test.descricao || '');
+          setDataProva(parseLocalISODate(test.data_prova));
+          setHorario(test.horario || '');
+          setSala(test.sala || '');
+          setDuracaoMinutos(test.duracao_minutos?.toString() || '');
+
+          const disciplina =
+            disciplinasData.find((d) => d.id === test.disciplina?.id) ||
+            (test.disciplina?.id
+              ? {
+                  id: test.disciplina.id,
+                  nome: test.disciplina.nome,
+                  sigla: test.disciplina.sigla || '',
+                }
+              : null);
+          const turma =
+            turmasData.find((t) => t.id === test.turma?.id) ||
+            (test.turma?.id
+              ? {
+                  id: test.turma.id,
+                  nome: test.turma.nome,
+                  serie: test.turma.serie,
+                  turma_letra: test.turma.turma_letra,
+                  ano_letivo: test.turma.ano_letivo,
+                }
+              : null);
+
+          if (disciplina) setSelectedDisciplina(disciplina);
+          if (turma) setSelectedTurma(turma);
+        }
+      } catch (error: any) {
+        Alert.alert(
+          'Erro',
+          error?.message || (isEditing ? 'Erro ao carregar prova' : 'Erro ao carregar dados'),
+          isEditing ? [{ text: 'OK', onPress: () => router.back() }] : undefined
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    bootstrap();
   }, []);
-
-  const loadData = async () => {
-    try {
-      setIsLoading(true);
-      const [disciplinasData, turmasData] = await Promise.all([
-        teachersService.getDisciplinas(),
-        teachersService.getTurmas(),
-      ]);
-      setDisciplinas(disciplinasData);
-      setTurmas(turmasData);
-    } catch (error: any) {
-      Alert.alert('Erro', error.message || 'Erro ao carregar dados');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const loadTest = async (id: string) => {
-    try {
-      setIsLoading(true);
-      const test = await testsService.getTestById(id);
-      setTitulo(test.titulo);
-      setDescricao(test.descricao || '');
-      setDataProva(new Date(test.data_prova));
-      setHorario(test.horario || '');
-      setSala(test.sala || '');
-      setDuracaoMinutos(test.duracao_minutos?.toString() || '');
-      
-      // Encontra disciplina e turma correspondentes
-      if (test.disciplina.id) {
-        const disciplina = disciplinas.find(d => d.id === test.disciplina.id);
-        if (disciplina) setSelectedDisciplina(disciplina);
-      }
-      if (test.turma.id) {
-        const turma = turmas.find(t => t.id === test.turma.id);
-        if (turma) setSelectedTurma(turma);
-      }
-    } catch (error: any) {
-      Alert.alert('Erro', error.message || 'Erro ao carregar prova');
-      router.back();
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleSave = async () => {
     // Validações
@@ -113,7 +132,10 @@ export default function CreateExam() {
     try {
       setIsSaving(true);
 
-      const dataProvaStr = dataProva.toISOString().split('T')[0];
+      const y = dataProva.getFullYear();
+      const m = String(dataProva.getMonth() + 1).padStart(2, '0');
+      const d = String(dataProva.getDate()).padStart(2, '0');
+      const dataProvaStr = `${y}-${m}-${d}`;
 
       if (isEditing && params.testId) {
         await testsService.updateTest(params.testId, {
@@ -126,9 +148,9 @@ export default function CreateExam() {
           sala: sala.trim() || undefined,
           duracao_minutos: duracaoMinutos ? parseInt(duracaoMinutos) : undefined,
         });
-        Alert.alert('Sucesso', 'Prova atualizada com sucesso!', [
-          { text: 'OK', onPress: () => router.back() },
-        ]);
+        setSuccessTitle('Prova atualizada');
+        setSuccessMessage('As alterações da prova foram salvas com sucesso.');
+        setSuccessVisible(true);
       } else {
         await testsService.createTest({
           titulo: titulo.trim(),
@@ -140,15 +162,20 @@ export default function CreateExam() {
           sala: sala.trim() || undefined,
           duracao_minutos: duracaoMinutos ? parseInt(duracaoMinutos) : undefined,
         });
-        Alert.alert('Sucesso', 'Prova criada com sucesso!', [
-          { text: 'OK', onPress: () => router.back() },
-        ]);
+        setSuccessTitle('Prova criada');
+        setSuccessMessage('A prova foi cadastrada com sucesso e já está disponível.');
+        setSuccessVisible(true);
       }
     } catch (error: any) {
       Alert.alert('Erro', error.message || 'Erro ao salvar prova');
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleSuccessClose = () => {
+    setSuccessVisible(false);
+    router.replace('/exams');
   };
 
   const formatDate = (date: Date): string => {
@@ -162,15 +189,7 @@ export default function CreateExam() {
   if (isLoading) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={20} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>
-            {isEditing ? 'Editar Prova' : 'Nova Prova'}
-          </Text>
-          <View style={styles.placeholder} />
-        </View>
+        <AppHeader title={isEditing ? 'Editar Prova' : 'Nova Prova'} />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={styles.loadingText}>Carregando...</Text>
@@ -182,15 +201,7 @@ export default function CreateExam() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>
-          {isEditing ? 'Editar Prova' : 'Nova Prova'}
-        </Text>
-        <View style={styles.placeholder} />
-      </View>
+      <AppHeader title={isEditing ? 'Editar Prova' : 'Nova Prova'} />
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         <View style={styles.section}>
@@ -321,6 +332,15 @@ export default function CreateExam() {
       </ScrollView>
 
       <BottomNav />
+
+      <SuccessModal
+        visible={successVisible}
+        title={successTitle}
+        message={successMessage}
+        hint="Você será redirecionado para a lista de provas."
+        buttonLabel="Ver provas"
+        onClose={handleSuccessClose}
+      />
 
       {/* Date Picker Modal */}
       {showDatePicker && (

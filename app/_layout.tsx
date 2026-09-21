@@ -1,4 +1,4 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router/react-navigation';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
@@ -30,7 +30,7 @@ function RootLayoutNav() {
     if (isLoading) return; // Aguarda o carregamento do estado de autenticação
 
     const currentSegment = segments[0] || '';
-    const inAuthGroup = currentSegment === 'login' || currentSegment === 'register' || currentSegment === 'forgot-password';
+    const inAuthGroup = currentSegment === 'login' || currentSegment === 'register' || currentSegment === 'forgot-password' || currentSegment === 'reset-password';
     const publicRoutes = ['brand']; // Rotas públicas que não exigem autenticação
     
     // Rotas protegidas que exigem autenticação
@@ -39,6 +39,7 @@ function RootLayoutNav() {
       'teacher-dashboard',
       'messages',
       'send-message',
+      'send-message-parent',
       'exercises',
       'create-exercise',
       'exams',
@@ -46,7 +47,15 @@ function RootLayoutNav() {
       'report',
       'message-detail',
       'aviso-detail',
+      'exercise-detail',
+      'documentos',
+      'documento-detail',
+      'enviar-atestado',
+      'pedir-declaracao',
+      'financeiro',
+      'financeiro-detail',
       'perfil',
+      'change-password',
     ];
 
     // Se não estiver autenticado e tentar acessar rota protegida, redireciona para login
@@ -80,7 +89,18 @@ function RootLayoutNav() {
     let active = true;
 
     const setupNotifications = async () => {
-      if (!hasSession || user?.type !== 'responsavel' || !selectedStudent?.id) {
+      if (!hasSession) {
+        notificationsService.stop();
+        return;
+      }
+
+      // Registra token push para pai e professora (build/APK)
+      await notificationsService.registerPushToken().catch((err) =>
+        console.warn('[Push] Failed to register token on session:', err)
+      );
+
+      // Polling local continua só para responsável (fallback com app aberto)
+      if (user?.type !== 'responsavel' || !selectedStudent?.id) {
         notificationsService.stop();
         return;
       }
@@ -125,19 +145,55 @@ function RootLayoutNav() {
 
           switch (data.type) {
             case 'message':
-              if (data.messageId) {
-                router.push({ pathname: '/message-detail', params: { id: data.messageId } });
+              if (data.conversaId || data.messageId) {
+                router.push({
+                  pathname: '/message-detail',
+                  params: {
+                    ...(data.conversaId ? { conversaId: data.conversaId } : {}),
+                    ...(data.messageId ? { messageId: data.messageId } : {}),
+                  },
+                });
               } else {
                 router.push('/messages');
               }
               break;
             case 'exercise':
             case 'work':
-              router.push('/exercises');
+              if (data.exerciseId) {
+                router.push({
+                  pathname: '/exercise-detail',
+                  params: { exerciseId: data.exerciseId },
+                });
+              } else {
+                router.push('/exercises');
+              }
               break;
             case 'exam':
             case 'exam_reminder':
               router.push('/exams');
+              break;
+            case 'aviso':
+            case 'comunicado':
+              if (data.avisoId) {
+                router.push({
+                  pathname: '/aviso-detail',
+                  params: { avisoId: data.avisoId },
+                });
+              } else {
+                router.push('/messages');
+              }
+              break;
+            case 'documento':
+            case 'document':
+            case 'atestado':
+              if (data.documentoId) {
+                router.push({
+                  pathname: '/documento-detail',
+                  params: { documentoId: data.documentoId },
+                });
+              } else {
+                router.push('/documentos');
+              }
               break;
             default:
               break;
@@ -179,7 +235,7 @@ function RootLayoutNav() {
   // Se não estiver autenticado, só renderiza telas de autenticação e públicas
   if (!hasSession) {
     const currentSegment = segments[0] || '';
-    const inAuthGroup = currentSegment === 'login' || currentSegment === 'register' || currentSegment === 'forgot-password';
+    const inAuthGroup = currentSegment === 'login' || currentSegment === 'register' || currentSegment === 'forgot-password' || currentSegment === 'reset-password';
     const publicRoutes = ['brand'];
     
     // Se não estiver na tela de autenticação ou pública, mostra loading até redirecionar
@@ -198,6 +254,7 @@ function RootLayoutNav() {
           <Stack.Screen name="login" options={{ headerShown: false }} />
           <Stack.Screen name="register" options={{ headerShown: false }} />
           <Stack.Screen name="forgot-password" options={{ headerShown: false }} />
+          <Stack.Screen name="reset-password" options={{ headerShown: false }} />
           <Stack.Screen name="brand" options={{ headerShown: false }} />
         </Stack>
         <StatusBar style="auto" />
@@ -214,17 +271,27 @@ function RootLayoutNav() {
         <Stack.Screen name="login" options={{ headerShown: false }} />
         <Stack.Screen name="register" options={{ headerShown: false }} />
         <Stack.Screen name="forgot-password" options={{ headerShown: false }} />
+        <Stack.Screen name="reset-password" options={{ headerShown: false }} />
         <Stack.Screen name="brand" options={{ headerShown: false }} />
         <Stack.Screen name="messages" options={{ headerShown: false }} />
         <Stack.Screen name="message-detail" options={{ headerShown: false }} />
         <Stack.Screen name="aviso-detail" options={{ headerShown: false }} />
         <Stack.Screen name="send-message" options={{ headerShown: false }} />
+        <Stack.Screen name="send-message-parent" options={{ headerShown: false }} />
         <Stack.Screen name="exercises" options={{ headerShown: false }} />
+        <Stack.Screen name="exercise-detail" options={{ headerShown: false }} />
         <Stack.Screen name="create-exercise" options={{ headerShown: false }} />
         <Stack.Screen name="exams" options={{ headerShown: false }} />
         <Stack.Screen name="create-exam" options={{ headerShown: false }} />
         <Stack.Screen name="report" options={{ headerShown: false }} />
+        <Stack.Screen name="documentos" options={{ headerShown: false }} />
+        <Stack.Screen name="documento-detail" options={{ headerShown: false }} />
+        <Stack.Screen name="enviar-atestado" options={{ headerShown: false }} />
+        <Stack.Screen name="pedir-declaracao" options={{ headerShown: false }} />
+        <Stack.Screen name="financeiro" options={{ headerShown: false }} />
+        <Stack.Screen name="financeiro-detail" options={{ headerShown: false }} />
         <Stack.Screen name="perfil" options={{ headerShown: false }} />
+        <Stack.Screen name="change-password" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
       </Stack>
       <StatusBar style="auto" />

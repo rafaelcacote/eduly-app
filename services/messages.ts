@@ -1,11 +1,20 @@
 import { apiClient } from './api';
+import type { MessageAuthor } from './authors';
 
-export type MessageType = 'informativo' | 'atencao' | 'aviso' | 'lembrete';
+export type MessageType = 'informativo' | 'atencao' | 'aviso' | 'lembrete' | 'outro';
 export type MessagePriority = 'normal' | 'alta' | 'media';
+
+export interface MessageAluno {
+  id: string;
+  nome: string;
+  nome_social?: string | null;
+}
 
 export interface Message {
   id: string;
   aluno_id: string;
+  conversa_id?: string | null;
+  mensagem_pai_id?: string | null;
   titulo: string;
   conteudo: string;
   tipo: MessageType;
@@ -15,9 +24,49 @@ export interface Message {
   created_at: string;
   updated_at: string;
   lida_em: string | null;
+  remetente?: MessageAuthor | null;
+  destinatario?: MessageAuthor | null;
+  aluno?: MessageAluno | null;
+  unread_count?: number;
+  messages_count?: number;
+}
+
+export interface Conversation {
+  conversa_id: string;
+  unread_count: number;
+  messages_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  aluno?: MessageAluno | null;
+  participantes?: MessageAuthor[];
+  ultima_mensagem?: Message | null;
+  /** Campos espelhados da última mensagem (compat listagem) */
+  id?: string;
+  aluno_id?: string;
+  titulo?: string;
+  conteudo?: string;
+  tipo?: MessageType;
+  prioridade?: MessagePriority;
+  anexo_url?: string | null;
+  lida?: boolean;
+  lida_em?: string | null;
+  remetente?: MessageAuthor | null;
+  destinatario?: MessageAuthor | null;
 }
 
 export interface MessagesResponse {
+  messages: Conversation[];
+  conversas?: Conversation[];
+  meta?: {
+    current_page: number;
+    last_page: number;
+    per_page: number;
+    total: number;
+  };
+}
+
+export interface ConversationHistoryResponse {
+  conversa_id: string;
   messages: Message[];
 }
 
@@ -28,7 +77,10 @@ export interface MessageResponse {
 export interface SendMessageRequest {
   aluno_id?: string;
   turma_id?: string;
-  titulo: string;
+  professor_id?: string;
+  conversa_id?: string;
+  mensagem_pai_id?: string;
+  titulo?: string;
   conteudo: string;
   tipo?: MessageType;
   prioridade?: MessagePriority;
@@ -36,7 +88,7 @@ export interface SendMessageRequest {
 }
 
 export interface SendMessageResponse {
-  message: string;
+  message: Message | string;
   messages?: Message[];
   count?: number;
 }
@@ -47,13 +99,13 @@ export interface MessagesListParams {
 }
 
 /**
- * Serviço para gerenciar mensagens
+ * Serviço para gerenciar mensagens / conversas
  */
 class MessagesService {
   /**
-   * Lista todas as mensagens com filtros opcionais
+   * Lista conversas (última mensagem de cada thread)
    */
-  async getMessages(params?: MessagesListParams): Promise<Message[]> {
+  async getMessages(params?: MessagesListParams): Promise<Conversation[]> {
     try {
       let endpoint = '/api/mobile/messages';
       const queryParams: string[] = [];
@@ -70,12 +122,28 @@ class MessagesService {
       }
 
       const response = await apiClient.get<MessagesResponse>(endpoint);
-      return response.messages || [];
+      return response.conversas || response.messages || [];
     } catch (error: any) {
       if (error instanceof Error) {
         throw error;
       }
       throw new Error(error?.message || 'Erro ao buscar mensagens. Tente novamente.');
+    }
+  }
+
+  /**
+   * Histórico ordenado de uma conversa
+   */
+  async getConversation(conversaId: string): Promise<ConversationHistoryResponse> {
+    try {
+      return await apiClient.get<ConversationHistoryResponse>(
+        `/api/mobile/messages/conversas/${conversaId}`
+      );
+    } catch (error: any) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(error?.message || 'Erro ao carregar conversa. Tente novamente.');
     }
   }
 
@@ -97,13 +165,11 @@ class MessagesService {
   /**
    * Envia uma mensagem para um aluno específico
    */
-  async sendMessageToStudent(data: SendMessageRequest & { aluno_id: string }): Promise<SendMessageResponse> {
+  async sendMessageToStudent(
+    data: SendMessageRequest & { aluno_id: string; titulo: string }
+  ): Promise<Message> {
     try {
-      if (!data.aluno_id) {
-        throw new Error('aluno_id é obrigatório para enviar mensagem a um aluno');
-      }
-
-      const response = await apiClient.post<SendMessageResponse>('/api/mobile/messages', {
+      const response = await apiClient.post<MessageResponse>('/api/mobile/messages', {
         aluno_id: data.aluno_id,
         titulo: data.titulo,
         conteudo: data.conteudo,
@@ -111,8 +177,7 @@ class MessagesService {
         prioridade: data.prioridade || 'normal',
         anexo_url: data.anexo_url || null,
       });
-
-      return response;
+      return response.message;
     } catch (error: any) {
       if (error instanceof Error) {
         throw error;
@@ -124,13 +189,11 @@ class MessagesService {
   /**
    * Envia uma mensagem para todos os alunos de uma turma
    */
-  async sendMessageToClass(data: SendMessageRequest & { turma_id: string }): Promise<SendMessageResponse> {
+  async sendMessageToClass(
+    data: SendMessageRequest & { turma_id: string; titulo: string }
+  ): Promise<SendMessageResponse> {
     try {
-      if (!data.turma_id) {
-        throw new Error('turma_id é obrigatório para enviar mensagem a uma turma');
-      }
-
-      const response = await apiClient.post<SendMessageResponse>('/api/mobile/messages', {
+      return await apiClient.post<SendMessageResponse>('/api/mobile/messages', {
         turma_id: data.turma_id,
         titulo: data.titulo,
         conteudo: data.conteudo,
@@ -138,13 +201,72 @@ class MessagesService {
         prioridade: data.prioridade || 'normal',
         anexo_url: data.anexo_url || null,
       });
-
-      return response;
     } catch (error: any) {
       if (error instanceof Error) {
         throw error;
       }
       throw new Error(error?.message || 'Erro ao enviar mensagem. Tente novamente.');
+    }
+  }
+
+  /**
+   * Responsável envia mensagem a um professor do aluno (abre conversa)
+   */
+  async sendMessageToTeacher(
+    data: SendMessageRequest & { aluno_id: string; professor_id: string; titulo: string }
+  ): Promise<Message> {
+    try {
+      const response = await apiClient.post<MessageResponse>('/api/mobile/messages', {
+        aluno_id: data.aluno_id,
+        professor_id: data.professor_id,
+        titulo: data.titulo,
+        conteudo: data.conteudo,
+        tipo: data.tipo || 'informativo',
+        prioridade: data.prioridade || 'normal',
+        anexo_url: data.anexo_url || null,
+      });
+      return response.message;
+    } catch (error: any) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(error?.message || 'Erro ao enviar mensagem. Tente novamente.');
+    }
+  }
+
+  /**
+   * Responde em uma conversa existente
+   */
+  async replyToConversation(data: {
+    conversa_id?: string;
+    mensagem_pai_id?: string;
+    conteudo: string;
+    titulo?: string;
+    tipo?: MessageType;
+    prioridade?: MessagePriority;
+  }): Promise<Message> {
+    try {
+      if (!data.conversa_id && !data.mensagem_pai_id) {
+        throw new Error('Informe a conversa ou a mensagem para responder.');
+      }
+
+      const payload: Record<string, unknown> = {
+        conteudo: data.conteudo,
+      };
+
+      if (data.conversa_id) payload.conversa_id = data.conversa_id;
+      if (data.mensagem_pai_id) payload.mensagem_pai_id = data.mensagem_pai_id;
+      if (data.titulo) payload.titulo = data.titulo;
+      if (data.tipo) payload.tipo = data.tipo;
+      if (data.prioridade) payload.prioridade = data.prioridade;
+
+      const response = await apiClient.post<MessageResponse>('/api/mobile/messages', payload);
+      return response.message;
+    } catch (error: any) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(error?.message || 'Erro ao responder. Tente novamente.');
     }
   }
 
@@ -164,15 +286,37 @@ class MessagesService {
   }
 
   /**
-   * Conta mensagens não lidas
+   * Marca toda a conversa como lida
+   */
+  async markConversationAsRead(conversaId: string): Promise<void> {
+    try {
+      await apiClient.patch<{ message: string; updated?: number }>(
+        `/api/mobile/messages/conversas/${conversaId}/read`
+      );
+    } catch (error: any) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(error?.message || 'Erro ao marcar conversa como lida.');
+    }
+  }
+
+  /**
+   * Conta mensagens não lidas (soma unread_count das conversas)
    */
   async getUnreadCount(aluno_id?: string): Promise<number> {
     try {
-      const messages = await this.getMessages({
+      const conversas = await this.getMessages({
         aluno_id,
         lida: false,
       });
-      return messages.length;
+
+      return conversas.reduce((total, item) => {
+        if (typeof item.unread_count === 'number') {
+          return total + item.unread_count;
+        }
+        return total + (item.lida ? 0 : 1);
+      }, 0);
     } catch (error: any) {
       console.error('Erro ao contar mensagens não lidas:', error);
       return 0;

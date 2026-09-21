@@ -10,6 +10,11 @@ interface AuthContextType {
   login: (credentials: LoginCredentials) => Promise<User>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  updatePhoto: (params: {
+    uri: string;
+    mimeType?: string | null;
+    fileName?: string | null;
+  }) => Promise<User>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -190,6 +195,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   };
 
+  const updatePhoto = async (params: {
+    uri: string;
+    mimeType?: string | null;
+    fileName?: string | null;
+  }): Promise<User> => {
+    const updatedUser = await authService.updatePhoto(params);
+    setUser(updatedUser);
+    return updatedUser;
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -199,6 +214,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         login,
         logout,
         refreshUser,
+        updatePhoto,
       }}
     >
       {children}

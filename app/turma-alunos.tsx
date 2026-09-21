@@ -1,9 +1,10 @@
+import { AppHeader } from '@/components/AppHeader';
 import BottomNav from '@/components/BottomNav';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { teachersService, Aluno } from '@/services/teachers';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { ArrowLeft, Users, Mail } from 'lucide-react-native';
+import { Users, Mail } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -82,16 +83,7 @@ export default function TurmaAlunos() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <View style={styles.headerTitleContainer}>
-          <Text style={styles.headerTitle}>Alunos da Turma</Text>
-          <Text style={styles.headerSubtitle}>{turmaTitle}</Text>
-        </View>
-        <View style={styles.placeholder} />
-      </View>
+      <AppHeader title="Alunos da Turma" subtitle={turmaTitle} />
 
       <ScrollView
         style={styles.scrollView}

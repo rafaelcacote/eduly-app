@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { MessageAuthor } from './authors';
 import { apiClient } from './api';
 
 const AVISOS_LAST_SEEN_KEY = '@eduly:avisos_last_seen';
@@ -25,6 +26,7 @@ export interface Aviso {
   created_at: string;
   updated_at: string;
   tenant: AvisoTenant;
+  criado_por?: MessageAuthor | null;
 }
 
 export interface AvisosListResponse {
@@ -114,6 +116,22 @@ class AvisosService {
     }
     const cutoff = Date.now() - NEW_AVISO_HOURS * 60 * 60 * 1000;
     return published > cutoff;
+  }
+
+  /**
+   * Conta comunicados novos (primeira página) para badge / alertas no app.
+   */
+  async countNewAvisos(): Promise<number> {
+    try {
+      const [response, lastSeenAt] = await Promise.all([
+        this.getAvisos({ page: 1 }),
+        this.getLastSeenAvisosAt(),
+      ]);
+
+      return response.avisos.filter((aviso) => this.isAvisoNew(aviso, lastSeenAt)).length;
+    } catch {
+      return 0;
+    }
   }
 }
 

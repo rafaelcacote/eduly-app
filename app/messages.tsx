@@ -1,12 +1,18 @@
+import { AppHeader, AppHeaderAction } from '@/components/AppHeader';
+import { AuthorRow } from '@/components/AuthorSpeech';
 import BottomNav from '@/components/BottomNav';
+import { PulsingDot } from '@/components/PulsingDot';
+import { MESSAGE_TYPE_LABELS } from '@/components/TypeIcon';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { useStudent } from '@/context/StudentContext';
-import { Message, messagesService, MessageType } from '@/services/messages';
 import { Aviso, avisosService } from '@/services/avisos';
+import type { MessageAuthor } from '@/services/authors';
+import { Conversation, messagesService } from '@/services/messages';
+import { StudentTeacher, studentsService } from '@/services/students';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, CheckCircle2, Circle, Filter, Megaphone, Search, Send, Trash2 } from 'lucide-react-native';
-import React, { useCallback, useEffect, useState } from 'react';
+import { CheckCircle2, Filter, Inbox, Megaphone, MessageCircle, Search, Send, Users } from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -22,44 +28,108 @@ import {
 } from 'react-native';
 
 type FilterType = 'all' | 'unread' | 'read';
-type TabType = 'mensagens' | 'avisos';
+type TabType = 'recados' | 'comunicados';
+type FilterModalType = 'student' | 'teacher' | null;
+
+const MESSAGES_PAGE_SIZE = 15;
+
+function getConversationAuthors(msg: Conversation): MessageAuthor[] {
+  const authors: MessageAuthor[] = [];
+  const push = (author?: MessageAuthor | null) => {
+    if (author?.id && !authors.some((item) => item.id === author.id)) {
+      authors.push(author);
+    }
+  };
+
+  push(msg.remetente);
+  push(msg.destinatario);
+  push(msg.ultima_mensagem?.remetente);
+  push(msg.ultima_mensagem?.destinatario);
+  (msg.participantes || []).forEach(push);
+
+  return authors;
+}
+
+function conversationMatchesTeacher(msg: Conversation, teacher: StudentTeacher): boolean {
+  const ids = new Set<string>();
+  ids.add(teacher.id);
+  if (teacher.usuario_id) ids.add(teacher.usuario_id);
+
+  return getConversationAuthors(msg).some((author) => ids.has(author.id));
+}
+
+function getTeacherFromConversation(
+  msg: Conversation,
+  professores: StudentTeacher[],
+  currentUserId?: string | null
+): MessageAuthor | null {
+  const authors = getConversationAuthors(msg);
+
+  if (professores.length > 0) {
+    const teacherIds = new Set<string>();
+    professores.forEach((item) => {
+      teacherIds.add(item.id);
+      if (item.usuario_id) teacherIds.add(item.usuario_id);
+    });
+    const matched = authors.find((author) => teacherIds.has(author.id));
+    if (matched) return matched;
+  }
+
+  const other = authors.find((author) => author.id !== currentUserId);
+  return other || msg.remetente || msg.ultima_mensagem?.remetente || null;
+}
 
 export default function Messages() {
   const router = useRouter();
   const { isAuthenticated, isLoading: isLoadingAuth, user } = useAuth();
   const { students, selectedStudent, setSelectedStudent } = useStudent();
-  const [activeTab, setActiveTab] = useState<TabType>('mensagens');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [filteredMessages, setFilteredMessages] = useState<Message[]>([]);
+  const [activeTab, setActiveTab] = useState<TabType>('recados');
+  const [messages, setMessages] = useState<Conversation[]>([]);
+  const [filteredMessages, setFilteredMessages] = useState<Conversation[]>([]);
+  const [visibleCount, setVisibleCount] = useState(MESSAGES_PAGE_SIZE);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<FilterType>('all');
-  const [showFilterModal, setShowFilterModal] = useState(false);
+  const [filterModal, setFilterModal] = useState<FilterModalType>(null);
+  const [professores, setProfessores] = useState<StudentTeacher[]>([]);
+  const [selectedTeacherId, setSelectedTeacherId] = useState<string | null>(null);
 
-  // Estado dos avisos
   const [avisos, setAvisos] = useState<Aviso[]>([]);
-  const [avisosPage, setAvisosPage] = useState(1);
-  const [avisosMeta, setAvisosMeta] = useState<{ current_page: number; last_page: number; per_page: number; total: number } | null>(null);
+  const [avisosMeta, setAvisosMeta] = useState<{
+    current_page: number;
+    last_page: number;
+    per_page: number;
+    total: number;
+  } | null>(null);
   const [isLoadingAvisos, setIsLoadingAvisos] = useState(false);
   const [isRefreshingAvisos, setIsRefreshingAvisos] = useState(false);
   const [isLoadingMoreAvisos, setIsLoadingMoreAvisos] = useState(false);
   const [avisosError, setAvisosError] = useState<string | null>(null);
+  const [lastSeenAvisosAt, setLastSeenAvisosAt] = useState<string | null>(null);
 
-  // Proteção: redireciona para login se não estiver autenticado
+  const isParent = user?.type === 'responsavel';
+  const selectedTeacher = useMemo(
+    () => professores.find((item) => item.id === selectedTeacherId) || null,
+    [professores, selectedTeacherId]
+  );
+  const visibleMessages = useMemo(
+    () => filteredMessages.slice(0, visibleCount),
+    [filteredMessages, visibleCount]
+  );
+  const hasMoreMessages = visibleCount < filteredMessages.length;
+
   useEffect(() => {
     if (!isLoadingAuth && !isAuthenticated) {
       router.replace('/login');
     }
   }, [isAuthenticated, isLoadingAuth, router]);
 
-  // Carrega mensagens
   const loadMessages = useCallback(async () => {
     try {
       setIsLoading(true);
       const params: { aluno_id?: string; lida?: boolean } = {};
 
-      // Usa o aluno selecionado do contexto global
       if (selectedStudent?.id) {
         params.aluno_id = selectedStudent.id;
       }
@@ -69,7 +139,7 @@ export default function Messages() {
     } catch (error: any) {
       Alert.alert(
         'Erro',
-        error?.message || 'Não foi possível carregar as mensagens. Tente novamente.',
+        error?.message || 'Não foi possível carregar os recados. Tente novamente.',
         [{ text: 'OK' }]
       );
     } finally {
@@ -77,49 +147,94 @@ export default function Messages() {
     }
   }, [selectedStudent]);
 
-  // Atualiza mensagens filtradas quando mensagens, filtro ou busca mudam
+  const loadProfessores = useCallback(async () => {
+    if (!isParent) {
+      setProfessores([]);
+      setSelectedTeacherId(null);
+      return;
+    }
+
+    const alunoId = selectedStudent?.id || students[0]?.id;
+    if (!alunoId) {
+      setProfessores([]);
+      setSelectedTeacherId(null);
+      return;
+    }
+
+    try {
+      const list = await studentsService.getTeachers(alunoId);
+      setProfessores(list);
+      setSelectedTeacherId((current) =>
+        current && list.some((item) => item.id === current) ? current : null
+      );
+    } catch {
+      setProfessores([]);
+      setSelectedTeacherId(null);
+    }
+  }, [isParent, selectedStudent?.id, students]);
+
   useEffect(() => {
     let filtered = [...messages];
 
-    // Aplica filtro de lida/não lida
     if (filterType === 'unread') {
-      filtered = filtered.filter(msg => !msg.lida);
+      filtered = filtered.filter((msg) => (msg.unread_count ?? (msg.lida ? 0 : 1)) > 0);
     } else if (filterType === 'read') {
-      filtered = filtered.filter(msg => msg.lida);
+      filtered = filtered.filter((msg) => (msg.unread_count ?? (msg.lida ? 0 : 1)) === 0);
     }
 
-    // Aplica busca
+    if (selectedTeacher) {
+      filtered = filtered.filter((msg) => conversationMatchesTeacher(msg, selectedTeacher));
+    }
+
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(
-        msg =>
-          msg.titulo.toLowerCase().includes(query) ||
-          msg.conteudo.toLowerCase().includes(query)
+        (msg) =>
+          (msg.titulo || '').toLowerCase().includes(query) ||
+          (msg.conteudo || '').toLowerCase().includes(query) ||
+          (msg.ultima_mensagem?.titulo || '').toLowerCase().includes(query) ||
+          (msg.ultima_mensagem?.conteudo || '').toLowerCase().includes(query) ||
+          getConversationAuthors(msg).some((author) =>
+            (author.nome_completo || '').toLowerCase().includes(query)
+          )
       );
     }
 
-    // Ordena por data (mais recentes primeiro)
     filtered.sort((a, b) => {
-      const dateA = new Date(a.created_at).getTime();
-      const dateB = new Date(b.created_at).getTime();
+      const dateA = new Date(a.updated_at || a.created_at || a.ultima_mensagem?.created_at || 0).getTime();
+      const dateB = new Date(b.updated_at || b.created_at || b.ultima_mensagem?.created_at || 0).getTime();
       return dateB - dateA;
     });
 
     setFilteredMessages(filtered);
-  }, [messages, filterType, searchQuery]);
+    setVisibleCount(MESSAGES_PAGE_SIZE);
+  }, [messages, filterType, searchQuery, selectedTeacher]);
 
-  // Carrega mensagens ao montar o componente e quando aluno selecionado muda
   useEffect(() => {
     if (isAuthenticated) {
       loadMessages();
     }
   }, [isAuthenticated, selectedStudent, loadMessages]);
 
-  // Marca avisos como vistos ao abrir a tela (para o indicador "novo" na home)
   useEffect(() => {
     if (isAuthenticated) {
-      avisosService.setLastSeenAvisosAt();
+      loadProfessores();
     }
+  }, [isAuthenticated, loadProfessores]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let cancelled = false;
+    (async () => {
+      const lastSeen = await avisosService.getLastSeenAvisosAt();
+      if (!cancelled) setLastSeenAvisosAt(lastSeen);
+      await avisosService.setLastSeenAvisosAt();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [isAuthenticated]);
 
   const handleRefresh = useCallback(async () => {
@@ -128,7 +243,6 @@ export default function Messages() {
     setIsRefreshing(false);
   }, [loadMessages]);
 
-  // Carrega avisos (lista paginada)
   const loadAvisos = useCallback(async (page: number = 1, append: boolean = false) => {
     try {
       setAvisosError(null);
@@ -141,16 +255,14 @@ export default function Messages() {
       const res = await avisosService.getAvisos({ page });
       if (page === 1) {
         setAvisos(res.avisos);
-        setAvisosPage(1);
       } else {
-        setAvisos(prev => [...prev, ...res.avisos]);
+        setAvisos((prev) => [...prev, ...res.avisos]);
       }
       setAvisosMeta(res.meta);
-      setAvisosPage(res.meta.current_page);
     } catch (error: any) {
-      const msg = error?.message || 'Não foi possível carregar os avisos.';
+      const msg = error?.message || 'Não foi possível carregar os comunicados.';
       if (msg.includes('Acesso negado') || msg.toLowerCase().includes('permissão')) {
-        setAvisosError('Avisos não disponíveis para seu perfil.');
+        setAvisosError('Comunicados não disponíveis para seu perfil.');
       } else {
         setAvisosError(msg);
       }
@@ -163,7 +275,7 @@ export default function Messages() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'avisos' && isAuthenticated) {
+    if (activeTab === 'comunicados' && isAuthenticated) {
       loadAvisos(1, false);
     }
   }, [activeTab, isAuthenticated, loadAvisos]);
@@ -174,58 +286,38 @@ export default function Messages() {
   }, [loadAvisos]);
 
   const handleLoadMoreAvisos = useCallback(() => {
-    if (!avisosMeta || avisosMeta.current_page >= avisosMeta.last_page || isLoadingMoreAvisos) return;
+    if (!avisosMeta || avisosMeta.current_page >= avisosMeta.last_page || isLoadingMoreAvisos) {
+      return;
+    }
     loadAvisos(avisosMeta.current_page + 1, true);
   }, [avisosMeta, isLoadingMoreAvisos, loadAvisos]);
 
-  const handleMessagePress = async (message: Message) => {
+  const handleMessagePress = async (conversation: Conversation) => {
+    const conversaId = conversation.conversa_id || conversation.id;
+    const messageId = conversation.id || conversation.ultima_mensagem?.id;
+
     try {
-      // Marca como lida se ainda não estiver lida
-      if (!message.lida) {
-        await messagesService.markAsRead(message.id);
-        // Atualiza a mensagem localmente
-        setMessages(prev =>
-          prev.map(msg =>
-            msg.id === message.id ? { ...msg, lida: true, lida_em: new Date().toISOString() } : msg
+      if (conversaId && (conversation.unread_count ?? 0) > 0) {
+        await messagesService.markConversationAsRead(conversaId);
+        setMessages((prev) =>
+          prev.map((msg) =>
+            (msg.conversa_id || msg.id) === conversaId
+              ? { ...msg, lida: true, unread_count: 0 }
+              : msg
           )
         );
       }
 
-      // Navega para detalhes da mensagem
       router.push({
         pathname: '/message-detail',
-        params: { messageId: message.id },
+        params: {
+          ...(conversaId ? { conversaId } : {}),
+          ...(messageId ? { messageId } : {}),
+        },
       });
     } catch (error: any) {
-      Alert.alert('Erro', error?.message || 'Não foi possível abrir a mensagem.');
+      Alert.alert('Erro', error?.message || 'Não foi possível abrir a conversa.');
     }
-  };
-
-  const handleDeleteMessage = (messageId: string, messageTitle: string) => {
-    Alert.alert(
-      'Excluir Mensagem',
-      `Tem certeza que deseja excluir a mensagem "${messageTitle}"? Esta ação não pode ser desfeita.`,
-      [
-        {
-          text: 'Cancelar',
-          style: 'cancel',
-        },
-        {
-          text: 'Excluir',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await messagesService.deleteMessage(messageId);
-              // Remove a mensagem da lista localmente
-              setMessages(prev => prev.filter(msg => msg.id !== messageId));
-              Alert.alert('Sucesso', 'Mensagem excluída com sucesso!');
-            } catch (err: any) {
-              Alert.alert('Erro', err.message || 'Erro ao excluir mensagem');
-            }
-          },
-        },
-      ]
-    );
   };
 
   const formatDate = (dateString: string): string => {
@@ -240,27 +332,8 @@ export default function Messages() {
       return `Ontem ${date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
     } else if (diffDays < 7) {
       return date.toLocaleDateString('pt-BR', { weekday: 'short', day: 'numeric', month: 'short' });
-    } else {
-      return date.toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', year: 'numeric' });
     }
-  };
-
-  // Ícones de mensagem - usando emojis
-  const getMessageIcon = (tipo: MessageType): string => {
-    const iconEmojis: Record<MessageType, string> = {
-      informativo: 'ℹ️', // Informativo → neutro
-      atencao: '⚠️',     // Atenção → médio
-      aviso: '🚨',       // Aviso → alto
-      lembrete: '🔔',    // Lembrete → ação futura
-    };
-
-    return iconEmojis[tipo] || '📄';
-  };
-
-  // Componente de ícone de mensagem
-  const MessageIcon = ({ tipo }: { tipo: MessageType }) => {
-    const emoji = getMessageIcon(tipo);
-    return <Text style={styles.messageIcon}>{emoji}</Text>;
+    return date.toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', year: 'numeric' });
   };
 
   const getPriorityColor = (prioridade: string): string => {
@@ -270,10 +343,9 @@ export default function Messages() {
   };
 
   const getUnreadCount = (): number => {
-    return messages.filter(msg => !msg.lida).length;
+    return messages.reduce((total, msg) => total + (msg.unread_count ?? (msg.lida ? 0 : 1)), 0);
   };
 
-  // Se não estiver autenticado ou ainda estiver carregando, mostra loading
   if (isLoadingAuth || !isAuthenticated) {
     return (
       <View style={styles.container}>
@@ -284,224 +356,210 @@ export default function Messages() {
     );
   }
 
+  const tabHint =
+    activeTab === 'recados'
+      ? 'Direcionados ao aluno ou responsável'
+      : 'Publicados pela escola para todos';
+
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Mensagens</Text>
-        {user?.type === 'teacher' ? (
+      <AppHeader
+        title="Comunicação"
+        right={
+          user?.type === 'teacher' ? (
+            <AppHeaderAction
+              onPress={() => router.push('/send-message')}
+              accessibilityLabel="Enviar recado"
+            >
+              <Send size={18} color={Colors.white} />
+            </AppHeaderAction>
+          ) : user?.type === 'responsavel' ? (
+            <AppHeaderAction
+              onPress={() => router.push('/send-message-parent')}
+              accessibilityLabel="Enviar mensagem ao professor"
+            >
+              <Send size={18} color={Colors.white} />
+            </AppHeaderAction>
+          ) : undefined
+        }
+      />
+
+      <View style={styles.tabSection}>
+        <View style={styles.segmentedControl}>
           <TouchableOpacity
-            onPress={() => router.push('/send-message')}
-            style={styles.sendButton}
+            style={[styles.segment, activeTab === 'recados' && styles.segmentActive]}
+            onPress={() => setActiveTab('recados')}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === 'recados' }}
           >
-            <Send size={20} color={Colors.primary} />
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.placeholder} />
-        )}
-      </View>
-
-      {/* Abas Mensagens / Avisos */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'mensagens' && styles.tabActive]}
-          onPress={() => setActiveTab('mensagens')}
-        >
-          <Text style={[styles.tabText, activeTab === 'mensagens' && styles.tabTextActive]}>
-            Mensagens
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'avisos' && styles.tabActive]}
-          onPress={() => setActiveTab('avisos')}
-        >
-          <Megaphone size={18} color={activeTab === 'avisos' ? Colors.white : Colors.textMuted} />
-          <Text style={[styles.tabText, activeTab === 'avisos' && styles.tabTextActive]}>
-            Avisos
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Filtros e busca (apenas na aba Mensagens) */}
-      {activeTab === 'mensagens' && (
-      <View style={styles.filtersContainer}>
-        <View style={styles.searchWrapper}>
-          <Search size={18} color={Colors.textMuted} style={styles.searchIcon} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Buscar mensagens..."
-            placeholderTextColor={Colors.textMuted}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-        </View>
-
-        {/* Filtros rápidos */}
-        <View style={styles.filterButtons}>
-          <TouchableOpacity
-            style={[styles.filterButton, filterType === 'all' && styles.filterButtonActive]}
-            onPress={() => setFilterType('all')}
-          >
-            <Text style={[styles.filterButtonText, filterType === 'all' && styles.filterButtonTextActive]}>
-              Todas
+            <MessageCircle
+              size={16}
+              color={activeTab === 'recados' ? Colors.white : Colors.textMuted}
+              strokeWidth={2.25}
+            />
+            <Text style={[styles.segmentText, activeTab === 'recados' && styles.segmentTextActive]}>
+              Recados
             </Text>
+            {getUnreadCount() > 0 && (
+              <View
+                style={[
+                  styles.segmentBadge,
+                  activeTab === 'recados' && styles.segmentBadgeActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.segmentBadgeText,
+                    activeTab === 'recados' && styles.segmentBadgeTextActive,
+                  ]}
+                >
+                  {getUnreadCount() > 99 ? '99+' : getUnreadCount()}
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.filterButton, filterType === 'unread' && styles.filterButtonActive]}
-            onPress={() => setFilterType('unread')}
+            style={[styles.segment, activeTab === 'comunicados' && styles.segmentActiveComunicado]}
+            onPress={() => setActiveTab('comunicados')}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === 'comunicados' }}
           >
-            <Text style={[styles.filterButtonText, filterType === 'unread' && styles.filterButtonTextActive]}>
-              Não lidas ({getUnreadCount()})
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.filterButton, filterType === 'read' && styles.filterButtonActive]}
-            onPress={() => setFilterType('read')}
-          >
-            <Text style={[styles.filterButtonText, filterType === 'read' && styles.filterButtonTextActive]}>
-              Lidas
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Seletor de aluno (se houver múltiplos alunos) */}
-        {students.length > 1 && (
-          <TouchableOpacity
-            style={styles.studentFilter}
-            onPress={() => setShowFilterModal(true)}
-          >
-            <Filter size={16} color={Colors.textMuted} />
-            <Text style={styles.studentFilterText}>
-              {selectedStudent
-                ? selectedStudent.nome_social || selectedStudent.nome
-                : 'Todos os alunos'}
-            </Text>
-          </TouchableOpacity>
-        )}
-      </View>
-      )}
-
-      {/* Conteúdo: Lista de mensagens ou Lista de avisos */}
-      {activeTab === 'mensagens' && (
-      <>
-      {/* Lista de mensagens */}
-      {isLoading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={styles.loadingText}>Carregando mensagens...</Text>
-        </View>
-      ) : filteredMessages.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Text style={styles.emptyIcon}>📭</Text>
-          <Text style={styles.emptyText}>
-            {searchQuery || filterType !== 'all'
-              ? 'Nenhuma mensagem encontrada'
-              : 'Nenhuma mensagem ainda'}
-          </Text>
-          <Text style={styles.emptySubtext}>
-            {searchQuery || filterType !== 'all'
-              ? 'Tente ajustar os filtros ou busca'
-              : 'As mensagens aparecerão aqui quando chegarem'}
-          </Text>
-        </View>
-      ) : (
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          refreshControl={
-            <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />
-          }
-        >
-          {filteredMessages.map((msg) => (
-            <View
-              key={msg.id}
+            <Megaphone
+              size={16}
+              color={activeTab === 'comunicados' ? Colors.white : Colors.textMuted}
+              strokeWidth={2.25}
+            />
+            <Text
               style={[
-                styles.messageCard,
-                !msg.lida && styles.messageCardUnread,
+                styles.segmentText,
+                activeTab === 'comunicados' && styles.segmentTextActive,
               ]}
             >
-              <TouchableOpacity
-                style={styles.messageCardContent}
-                onPress={() => handleMessagePress(msg)}
+              Comunicados
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.tabHintRow}>
+          {activeTab === 'recados' ? (
+            <MessageCircle size={14} color={Colors.primary} strokeWidth={2.25} />
+          ) : (
+            <Users size={14} color="#0f766e" strokeWidth={2.25} />
+          )}
+          <Text
+            style={[
+              styles.tabHint,
+              activeTab === 'comunicados' && styles.tabHintComunicado,
+            ]}
+          >
+            {tabHint}
+          </Text>
+        </View>
+      </View>
+
+      {activeTab === 'recados' && (
+        <View style={styles.filtersContainer}>
+          <View style={styles.searchWrapper}>
+            <Search size={18} color={Colors.textMuted} style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Buscar recados..."
+              placeholderTextColor={Colors.textMuted}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+          </View>
+
+          <View style={styles.filterButtons}>
+            <TouchableOpacity
+              style={[styles.filterButton, filterType === 'all' && styles.filterButtonActive]}
+              onPress={() => setFilterType('all')}
+            >
+              <Text
+                style={[
+                  styles.filterButtonText,
+                  filterType === 'all' && styles.filterButtonTextActive,
+                ]}
               >
-                <MessageIcon tipo={msg.tipo} />
-                <View style={styles.messageContent}>
-                  <View style={styles.messageHeader}>
-                    <Text
-                      style={[
-                        styles.messageTitle,
-                        !msg.lida && styles.messageTitleUnread,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {msg.titulo}
-                    </Text>
-                    {!msg.lida && <View style={styles.unreadDot} />}
-                  </View>
-                  <Text style={styles.messagePreview} numberOfLines={2}>
-                    {msg.conteudo}
-                  </Text>
-                  <View style={styles.messageFooter}>
-                    <View style={styles.messageMeta}>
-                      <Text style={styles.messageType}>{msg.tipo}</Text>
-                      {msg.prioridade !== 'normal' && (
-                        <View style={[styles.priorityBadge, { backgroundColor: getPriorityColor(msg.prioridade) + '20' }]}>
-                          <Text style={[styles.priorityText, { color: getPriorityColor(msg.prioridade) }]}>
-                            {msg.prioridade}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.messageTime}>{formatDate(msg.created_at)}</Text>
-                  </View>
-                </View>
-                <View style={styles.messageStatus}>
-                  {msg.lida ? (
-                    <CheckCircle2 size={20} color={Colors.success} />
-                  ) : (
-                    <Circle size={20} color={Colors.primary} />
-                  )}
-                </View>
-              </TouchableOpacity>
-              {user?.type === 'teacher' && (
-                <TouchableOpacity
-                  style={styles.deleteButton}
-                  onPress={() => handleDeleteMessage(msg.id, msg.titulo)}
-                >
-                  <Trash2 size={18} color={Colors.error} />
-                </TouchableOpacity>
-              )}
-            </View>
-          ))}
-        </ScrollView>
-      )}
-      </>
+                Todos
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.filterButton, filterType === 'unread' && styles.filterButtonActive]}
+              onPress={() => setFilterType('unread')}
+            >
+              <Text
+                style={[
+                  styles.filterButtonText,
+                  filterType === 'unread' && styles.filterButtonTextActive,
+                ]}
+              >
+                Não lidos ({getUnreadCount()})
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.filterButton, filterType === 'read' && styles.filterButtonActive]}
+              onPress={() => setFilterType('read')}
+            >
+              <Text
+                style={[
+                  styles.filterButtonText,
+                  filterType === 'read' && styles.filterButtonTextActive,
+                ]}
+              >
+                Lidos
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {students.length > 1 && (
+            <TouchableOpacity
+              style={styles.studentFilter}
+              onPress={() => setFilterModal('student')}
+            >
+              <Filter size={16} color={Colors.textMuted} />
+              <Text style={styles.studentFilterText}>
+                {selectedStudent
+                  ? selectedStudent.nome_social || selectedStudent.nome
+                  : 'Todos os alunos'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {isParent && professores.length > 0 && (
+            <TouchableOpacity
+              style={styles.studentFilter}
+              onPress={() => setFilterModal('teacher')}
+            >
+              <Users size={16} color={Colors.textMuted} />
+              <Text style={styles.studentFilterText}>
+                {selectedTeacher ? selectedTeacher.nome_completo : 'Todos os professores'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
       )}
 
-      {/* Lista de avisos */}
-      {activeTab === 'avisos' && (
+      {activeTab === 'recados' && (
         <>
-          {isLoadingAvisos ? (
+          {isLoading ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color={Colors.primary} />
-              <Text style={styles.loadingText}>Carregando avisos...</Text>
+              <Text style={styles.loadingText}>Carregando recados...</Text>
             </View>
-          ) : avisosError ? (
+          ) : filteredMessages.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <Text style={styles.emptyIcon}>📋</Text>
-              <Text style={styles.emptyText}>{avisosError}</Text>
-              <Text style={styles.emptySubtext}>
-                Os avisos da escola aparecem aqui para responsáveis e professores.
+              <View style={styles.emptyIconWrap}>
+                <Inbox size={32} color={Colors.primary} strokeWidth={2} />
+              </View>
+              <Text style={styles.emptyText}>
+                {searchQuery || filterType !== 'all' || selectedTeacher
+                  ? 'Nenhum recado encontrado'
+                  : 'Nenhum recado ainda'}
               </Text>
-            </View>
-          ) : avisos.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyIcon}>📢</Text>
-              <Text style={styles.emptyText}>Nenhum aviso</Text>
               <Text style={styles.emptySubtext}>
-                Os avisos da escola aparecerão aqui quando forem publicados.
+                {searchQuery || filterType !== 'all' || selectedTeacher
+                  ? 'Tente ajustar os filtros ou a busca'
+                  : 'Recados enviados para o aluno ou responsável aparecem aqui'}
               </Text>
             </View>
           ) : (
@@ -509,23 +567,186 @@ export default function Messages() {
               style={styles.scrollView}
               contentContainerStyle={styles.scrollContent}
               refreshControl={
-                <RefreshControl refreshing={isRefreshingAvisos} onRefresh={handleRefreshAvisos} />
+                <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />
+              }
+            >
+              {visibleMessages.map((msg) => {
+                const unread = msg.unread_count ?? (msg.lida ? 0 : 1);
+                const title = msg.titulo || msg.ultima_mensagem?.titulo || 'Conversa';
+                const preview = msg.conteudo || msg.ultima_mensagem?.conteudo || '';
+                const author = isParent
+                  ? getTeacherFromConversation(msg, professores, user?.id)
+                  : msg.remetente || msg.ultima_mensagem?.remetente;
+                const createdAt =
+                  msg.updated_at ||
+                  msg.ultima_mensagem?.created_at ||
+                  msg.created_at ||
+                  new Date().toISOString();
+                const tipo = msg.tipo || msg.ultima_mensagem?.tipo || 'informativo';
+                const prioridade = msg.prioridade || msg.ultima_mensagem?.prioridade || 'normal';
+                const messagesCount = msg.messages_count || 1;
+
+                return (
+                <View
+                  key={msg.conversa_id || msg.id}
+                  style={[styles.messageCard, unread > 0 && styles.messageCardUnread]}
+                >
+                  <TouchableOpacity
+                    style={styles.messageCardContent}
+                    onPress={() => handleMessagePress(msg)}
+                  >
+                    <View style={styles.messageContent}>
+                      <AuthorRow
+                        author={author}
+                        tone="recado"
+                        asRecadoDaProf={isParent}
+                      />
+                      <View style={styles.messageHeader}>
+                        <View style={styles.channelChip}>
+                          <Text style={styles.channelChipText}>
+                            {messagesCount > 1 ? 'Conversa' : 'Recado'}
+                          </Text>
+                        </View>
+                        {unread > 0 && <PulsingDot size={8} />}
+                        {messagesCount > 1 && (
+                          <View style={styles.threadCountChip}>
+                            <Text style={styles.threadCountText}>{messagesCount} msgs</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text
+                        style={[styles.messageTitle, unread > 0 && styles.messageTitleUnread]}
+                        numberOfLines={1}
+                      >
+                        {title}
+                      </Text>
+                      <Text style={styles.messagePreview} numberOfLines={2}>
+                        {preview}
+                      </Text>
+                      <View style={styles.messageFooter}>
+                        <View style={styles.messageMeta}>
+                          <Text style={styles.messageType}>
+                            {MESSAGE_TYPE_LABELS[tipo] ?? tipo}
+                          </Text>
+                          {prioridade !== 'normal' && (
+                            <View
+                              style={[
+                                styles.priorityBadge,
+                                { backgroundColor: getPriorityColor(prioridade) + '20' },
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.priorityText,
+                                  { color: getPriorityColor(prioridade) },
+                                ]}
+                              >
+                                {prioridade}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.messageTime}>{formatDate(createdAt)}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.messageStatus}>
+                      {unread > 0 ? (
+                        <View style={styles.unreadCountBadge}>
+                          <Text style={styles.unreadCountText}>
+                            {unread > 99 ? '99+' : unread}
+                          </Text>
+                        </View>
+                      ) : (
+                        <CheckCircle2 size={20} color={Colors.success} />
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                </View>
+                );
+              })}
+              {hasMoreMessages && (
+                <TouchableOpacity
+                  style={styles.loadMoreButton}
+                  onPress={() =>
+                    setVisibleCount((current) =>
+                      Math.min(current + MESSAGES_PAGE_SIZE, filteredMessages.length)
+                    )
+                  }
+                >
+                  <Text style={styles.loadMoreText}>
+                    Carregar mais recados ({filteredMessages.length - visibleCount} restantes)
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
+          )}
+        </>
+      )}
+
+      {activeTab === 'comunicados' && (
+        <>
+          {isLoadingAvisos ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0f766e" />
+              <Text style={styles.loadingText}>Carregando comunicados...</Text>
+            </View>
+          ) : avisosError ? (
+            <View style={styles.emptyContainer}>
+              <View style={[styles.emptyIconWrap, styles.emptyIconWrapComunicado]}>
+                <Megaphone size={32} color="#0f766e" strokeWidth={2} />
+              </View>
+              <Text style={styles.emptyText}>{avisosError}</Text>
+              <Text style={styles.emptySubtext}>
+                Comunicados da escola aparecem aqui para responsáveis e professores.
+              </Text>
+            </View>
+          ) : avisos.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <View style={[styles.emptyIconWrap, styles.emptyIconWrapComunicado]}>
+                <Megaphone size={32} color="#0f766e" strokeWidth={2} />
+              </View>
+              <Text style={styles.emptyText}>Nenhum comunicado</Text>
+              <Text style={styles.emptySubtext}>
+                Quando a escola publicar um comunicado para todos, ele aparece aqui.
+              </Text>
+            </View>
+          ) : (
+            <ScrollView
+              style={styles.scrollView}
+              contentContainerStyle={styles.scrollContent}
+              refreshControl={
+                <RefreshControl
+                  refreshing={isRefreshingAvisos}
+                  onRefresh={handleRefreshAvisos}
+                  tintColor="#0f766e"
+                />
               }
             >
               {avisos.map((aviso) => (
                 <TouchableOpacity
                   key={aviso.id}
-                  style={styles.messageCard}
-                  onPress={() => router.push({ pathname: '/aviso-detail', params: { avisoId: aviso.id } })}
+                  style={[styles.messageCard, styles.comunicadoCard]}
+                  onPress={() =>
+                    router.push({ pathname: '/aviso-detail', params: { avisoId: aviso.id } })
+                  }
                 >
+                  <View style={styles.comunicadoAccent} />
                   <View style={styles.messageCardContent}>
-                    <Text style={styles.avisoIcon}>📢</Text>
                     <View style={styles.messageContent}>
+                      <AuthorRow author={aviso.criado_por} tone="comunicado" />
                       <View style={styles.messageHeader}>
-                        <Text style={[styles.messageTitle, styles.messageTitleUnread]} numberOfLines={1}>
-                          {aviso.titulo}
-                        </Text>
+                        <View style={[styles.channelChip, styles.channelChipComunicado]}>
+                          <Text style={[styles.channelChipText, styles.channelChipTextComunicado]}>
+                            Comunicado
+                          </Text>
+                        </View>
+                        {avisosService.isAvisoNew(aviso, lastSeenAvisosAt) && (
+                          <PulsingDot size={8} color="#0f766e" />
+                        )}
                       </View>
+                      <Text style={[styles.messageTitle, styles.messageTitleUnread]} numberOfLines={1}>
+                        {aviso.titulo}
+                      </Text>
                       <Text style={styles.messagePreview} numberOfLines={2}>
                         {aviso.conteudo}
                       </Text>
@@ -535,8 +756,18 @@ export default function Messages() {
                             <Text style={styles.messageType}>{aviso.tenant.nome}</Text>
                           )}
                           {aviso.prioridade !== 'normal' && (
-                            <View style={[styles.priorityBadge, { backgroundColor: getPriorityColor(aviso.prioridade) + '20' }]}>
-                              <Text style={[styles.priorityText, { color: getPriorityColor(aviso.prioridade) }]}>
+                            <View
+                              style={[
+                                styles.priorityBadge,
+                                { backgroundColor: getPriorityColor(aviso.prioridade) + '20' },
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.priorityText,
+                                  { color: getPriorityColor(aviso.prioridade) },
+                                ]}
+                              >
                                 {aviso.prioridade}
                               </Text>
                             </View>
@@ -557,9 +788,11 @@ export default function Messages() {
                   disabled={isLoadingMoreAvisos}
                 >
                   {isLoadingMoreAvisos ? (
-                    <ActivityIndicator size="small" color={Colors.primary} />
+                    <ActivityIndicator size="small" color="#0f766e" />
                   ) : (
-                    <Text style={styles.loadMoreText}>Carregar mais avisos</Text>
+                    <Text style={[styles.loadMoreText, { color: '#0f766e' }]}>
+                      Carregar mais comunicados
+                    </Text>
                   )}
                 </TouchableOpacity>
               )}
@@ -570,13 +803,12 @@ export default function Messages() {
 
       <BottomNav />
 
-      {/* Modal de seleção de aluno */}
-      {showFilterModal && students.length > 1 && (
+      {filterModal === 'student' && students.length > 1 && (
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Filtrar por aluno</Text>
-              <TouchableOpacity onPress={() => setShowFilterModal(false)}>
+              <TouchableOpacity onPress={() => setFilterModal(null)}>
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
@@ -590,7 +822,8 @@ export default function Messages() {
                   ]}
                   onPress={async () => {
                     await setSelectedStudent(student);
-                    setShowFilterModal(false);
+                    setSelectedTeacherId(null);
+                    setFilterModal(null);
                   }}
                 >
                   <Text style={styles.studentOptionName}>
@@ -598,6 +831,58 @@ export default function Messages() {
                   </Text>
                 </TouchableOpacity>
               ))}
+            </ScrollView>
+          </View>
+        </View>
+      )}
+
+      {filterModal === 'teacher' && isParent && professores.length > 0 && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Filtrar por professor</Text>
+              <TouchableOpacity onPress={() => setFilterModal(null)}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.modalScrollView}>
+              <TouchableOpacity
+                style={[
+                  styles.studentOption,
+                  selectedTeacherId === null && styles.studentOptionSelected,
+                ]}
+                onPress={() => {
+                  setSelectedTeacherId(null);
+                  setFilterModal(null);
+                }}
+              >
+                <Text style={styles.studentOptionName}>Todos os professores</Text>
+              </TouchableOpacity>
+              {professores.map((professor) => {
+                const disciplinas = (professor.disciplinas || [])
+                  .map((item) => item.nome)
+                  .filter(Boolean)
+                  .join(', ');
+
+                return (
+                  <TouchableOpacity
+                    key={professor.id}
+                    style={[
+                      styles.studentOption,
+                      selectedTeacherId === professor.id && styles.studentOptionSelected,
+                    ]}
+                    onPress={() => {
+                      setSelectedTeacherId(professor.id);
+                      setFilterModal(null);
+                    }}
+                  >
+                    <Text style={styles.studentOptionName}>{professor.nome_completo}</Text>
+                    {!!disciplinas && (
+                      <Text style={styles.teacherOptionSubtitle}>{disciplinas}</Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           </View>
         </View>
@@ -642,34 +927,77 @@ const styles = StyleSheet.create({
     padding: 8,
     borderRadius: 8,
   },
-  tabBar: {
-    flexDirection: 'row',
+  tabSection: {
     backgroundColor: Colors.white,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    paddingHorizontal: 16,
-    gap: 0,
+    gap: 10,
   },
-  tab: {
+  segmentedControl: {
+    flexDirection: 'row',
+    backgroundColor: Colors.muted,
+    borderRadius: 12,
+    padding: 4,
+    gap: 4,
+  },
+  segment: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 14,
-    borderBottomWidth: 3,
-    borderBottomColor: 'transparent',
+    paddingVertical: 10,
+    borderRadius: 10,
   },
-  tabActive: {
-    borderBottomColor: Colors.primary,
+  segmentActive: {
+    backgroundColor: Colors.primary,
   },
-  tabText: {
-    fontSize: 15,
+  segmentActiveComunicado: {
+    backgroundColor: '#0f766e',
+  },
+  segmentText: {
+    fontSize: 14,
     fontWeight: '600',
     color: Colors.textMuted,
   },
-  tabTextActive: {
+  segmentTextActive: {
+    color: Colors.white,
+  },
+  segmentBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.primary,
+  },
+  segmentBadgeActive: {
+    backgroundColor: Colors.white,
+  },
+  segmentBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.white,
+  },
+  segmentBadgeTextActive: {
     color: Colors.primary,
+  },
+  tabHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 4,
+  },
+  tabHint: {
+    fontSize: 13,
+    color: Colors.primary,
+    fontWeight: '500',
+  },
+  tabHintComunicado: {
+    color: '#0f766e',
   },
   filtersContainer: {
     padding: 16,
@@ -755,13 +1083,20 @@ const styles = StyleSheet.create({
     backgroundColor: '#eff6ff',
     borderColor: Colors.primary + '33',
   },
+  comunicadoCard: {
+    flexDirection: 'row',
+    backgroundColor: '#f0fdfa',
+    borderColor: '#99f6e4',
+  },
+  comunicadoAccent: {
+    width: 4,
+    backgroundColor: '#0f766e',
+  },
   messageCardContent: {
+    flex: 1,
     flexDirection: 'row',
     gap: 12,
     padding: 16,
-  },
-  messageIcon: {
-    fontSize: 28,
   },
   messageContent: {
     flex: 1,
@@ -770,13 +1105,57 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    marginTop: 10,
     marginBottom: 4,
   },
+  channelChip: {
+    backgroundColor: '#dbeafe',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  channelChipComunicado: {
+    backgroundColor: '#ccfbf1',
+  },
+  channelChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.primary,
+    letterSpacing: 0.2,
+  },
+  channelChipTextComunicado: {
+    color: '#0f766e',
+  },
+  threadCountChip: {
+    backgroundColor: Colors.muted,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  threadCountText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  unreadCountBadge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  unreadCountText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.white,
+  },
   messageTitle: {
-    flex: 1,
     fontSize: 14,
     fontWeight: '600',
     color: Colors.textMuted,
+    marginBottom: 4,
   },
   messageTitleUnread: {
     color: Colors.text,
@@ -826,19 +1205,6 @@ const styles = StyleSheet.create({
   messageStatus: {
     justifyContent: 'center',
   },
-  deleteButton: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    padding: 8,
-    borderRadius: 8,
-    backgroundColor: Colors.white,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -855,9 +1221,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 32,
   },
-  emptyIcon: {
-    fontSize: 64,
+  emptyIconWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 20,
+    backgroundColor: Colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 16,
+  },
+  emptyIconWrapComunicado: {
+    backgroundColor: '#f0fdfa',
   },
   emptyText: {
     fontSize: 18,
@@ -928,8 +1302,10 @@ const styles = StyleSheet.create({
     color: Colors.text,
     fontWeight: '500',
   },
-  avisoIcon: {
-    fontSize: 28,
+  teacherOptionSubtitle: {
+    fontSize: 13,
+    color: Colors.textMuted,
+    marginTop: 4,
   },
   loadMoreButton: {
     padding: 16,

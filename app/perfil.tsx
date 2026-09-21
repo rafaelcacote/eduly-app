@@ -1,15 +1,22 @@
+import { AppHeader } from '@/components/AppHeader';
 import BottomNav from '@/components/BottomNav';
+import { StudentAvatar } from '@/components/StudentAvatar';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { useStudent } from '@/context/StudentContext';
+import { getUserPhotoUrl } from '@/services/auth';
 import { teachersService, Turma } from '@/services/teachers';
 import { Student } from '@/services/students';
+import { resolveMediaUrl } from '@/utils/mediaUrl';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, Mail, Phone, User, GraduationCap, BookOpen, Building2 } from 'lucide-react-native';
-import React, { useCallback, useEffect, useState } from 'react';
+import { Mail, Phone, User, GraduationCap, BookOpen, Building2, Camera, Lock, ChevronRight } from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Platform,
   RefreshControl,
   ScrollView,
@@ -39,11 +46,33 @@ function formatPhone(phone: string | null): string {
 
 export default function Perfil() {
   const router = useRouter();
-  const { user, isAuthenticated, isLoading: isLoadingAuth } = useAuth();
+  const { user, isAuthenticated, isLoading: isLoadingAuth, refreshUser, updatePhoto } = useAuth();
   const { students, selectedStudent, isLoading: isLoadingStudents, refreshStudents } = useStudent();
   const [turmas, setTurmas] = useState<Turma[]>([]);
   const [isLoadingTurmas, setIsLoadingTurmas] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const isTeacher = user?.type === 'teacher';
+  const [schoolLogoFailed, setSchoolLogoFailed] = useState(false);
+
+  const schoolInfo = useMemo(() => {
+    if (user?.type === 'responsavel') {
+      const school = selectedStudent?.school || students[0]?.school;
+      return {
+        name: school?.nome || null,
+        logoUrl: resolveMediaUrl(school?.logo_url),
+      };
+    }
+    const school = turmas[0]?.school;
+    return {
+      name: school?.nome || turmas[0]?.escola?.nome || null,
+      logoUrl: resolveMediaUrl(school?.logo_url),
+    };
+  }, [user?.type, selectedStudent, students, turmas]);
+
+  useEffect(() => {
+    setSchoolLogoFailed(false);
+  }, [schoolInfo.logoUrl]);
 
   useEffect(() => {
     if (!isLoadingAuth && !isAuthenticated) {
@@ -72,13 +101,70 @@ export default function Perfil() {
 
   const onRefresh = useCallback(async () => {
     setIsRefreshing(true);
+    try {
+      await refreshUser();
+    } catch {
+      // Mantém dados locais se a atualização falhar
+    }
     if (user?.type === 'teacher') {
       await loadTurmas();
     } else {
       await refreshStudents();
     }
     setIsRefreshing(false);
-  }, [user?.type, loadTurmas, refreshStudents]);
+  }, [user?.type, loadTurmas, refreshStudents, refreshUser]);
+
+  const handleChangePhoto = useCallback(async () => {
+    if (!isTeacher || isUploadingPhoto) return;
+
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        const message =
+          'Permissão necessária para acessar a galeria e alterar a foto de perfil.';
+        if (Platform.OS === 'web') {
+          window.alert(message);
+        } else {
+          Alert.alert('Permissão necessária', message);
+        }
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (result.canceled || !result.assets?.[0]) return;
+
+      const asset = result.assets[0];
+      setIsUploadingPhoto(true);
+
+      await updatePhoto({
+        uri: asset.uri,
+        mimeType: asset.mimeType,
+        fileName: asset.fileName,
+      });
+
+      const successMessage = 'Foto de perfil atualizada com sucesso.';
+      if (Platform.OS === 'web') {
+        window.alert(successMessage);
+      } else {
+        Alert.alert('Sucesso', successMessage);
+      }
+    } catch (error: any) {
+      const message = error?.message || 'Não foi possível atualizar a foto. Tente novamente.';
+      if (Platform.OS === 'web') {
+        window.alert(message);
+      } else {
+        Alert.alert('Erro', message);
+      }
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  }, [isTeacher, isUploadingPhoto, updatePhoto]);
 
   if (isLoadingAuth || !isAuthenticated) {
     return (
@@ -90,13 +176,7 @@ export default function Perfil() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Perfil</Text>
-        <View style={styles.placeholder} />
-      </View>
+      <AppHeader title="Perfil" />
 
       <ScrollView
         style={styles.scrollView}
@@ -106,25 +186,75 @@ export default function Perfil() {
         <LinearGradient
           colors={Colors.gradient.primary as [string, string]}
           start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
+          end={{ x: 1, y: 1 }}
           style={styles.profileCard}
         >
-          <View style={styles.avatarPlaceholder}>
-            <User size={48} color="rgba(255,255,255,0.9)" />
+          <View style={styles.profileGlow} />
+
+          <View style={styles.avatarWrap}>
+            <StudentAvatar
+              nome={user?.nome_completo || 'Usuário'}
+              fotoUrl={getUserPhotoUrl(user)}
+              size="xl"
+              ring
+              style={styles.profileAvatar}
+            />
+            {isTeacher && (
+              <TouchableOpacity
+                style={styles.changePhotoButton}
+                onPress={handleChangePhoto}
+                disabled={isUploadingPhoto}
+                accessibilityRole="button"
+                accessibilityLabel="Trocar foto de perfil"
+              >
+                {isUploadingPhoto ? (
+                  <ActivityIndicator size="small" color={Colors.white} />
+                ) : (
+                  <Camera size={16} color={Colors.white} />
+                )}
+              </TouchableOpacity>
+            )}
           </View>
           <Text style={styles.profileName}>{user?.nome_completo || '...'}</Text>
           <Text style={styles.profileRole}>
             {user?.type === 'teacher' ? 'Professor(a)' : 'Responsável'}
           </Text>
-          {(() => {
-            const schoolName =
-              user?.type === 'responsavel'
-                ? selectedStudent?.school?.nome || students[0]?.school?.nome
-                : turmas[0]?.school?.nome || turmas[0]?.escola?.nome;
-            return schoolName ? (
-              <Text style={styles.profileSchool}>{schoolName}</Text>
-            ) : null;
-          })()}
+          {isTeacher && (
+            <TouchableOpacity
+              onPress={handleChangePhoto}
+              disabled={isUploadingPhoto}
+              style={styles.changePhotoLink}
+              accessibilityRole="button"
+            >
+              <Text style={styles.changePhotoLinkText}>
+                {isUploadingPhoto ? 'Enviando foto...' : 'Trocar foto'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {schoolInfo.name ? (
+            <View style={styles.schoolBadge}>
+              <View style={styles.schoolLogoFrame}>
+                {schoolInfo.logoUrl && !schoolLogoFailed ? (
+                  <Image
+                    source={{ uri: schoolInfo.logoUrl }}
+                    style={styles.schoolLogo}
+                    contentFit="contain"
+                    accessibilityLabel={`Logo da ${schoolInfo.name}`}
+                    onError={() => setSchoolLogoFailed(true)}
+                  />
+                ) : (
+                  <Building2 size={22} color={Colors.primary} strokeWidth={2} />
+                )}
+              </View>
+              <View style={styles.schoolBadgeText}>
+                <Text style={styles.schoolBadgeLabel}>Escola</Text>
+                <Text style={styles.schoolBadgeName} numberOfLines={2}>
+                  {schoolInfo.name}
+                </Text>
+              </View>
+            </View>
+          ) : null}
         </LinearGradient>
 
         <View style={styles.section}>
@@ -147,22 +277,47 @@ export default function Perfil() {
               <Text style={styles.infoLabel}>Telefone</Text>
               <Text style={styles.infoValue}>{formatPhone(user?.telefone)}</Text>
             </View>
-            {(() => {
-              const schoolName =
-                user?.type === 'responsavel'
-                  ? selectedStudent?.school?.nome || students[0]?.school?.nome
-                  : turmas[0]?.school?.nome || turmas[0]?.escola?.nome;
-              return schoolName ? (
-                <>
-                  <View style={styles.divider} />
-                  <View style={styles.infoRow}>
+            {schoolInfo.name ? (
+              <>
+                <View style={styles.divider} />
+                <View style={styles.infoRow}>
+                  {schoolInfo.logoUrl && !schoolLogoFailed ? (
+                    <Image
+                      source={{ uri: schoolInfo.logoUrl }}
+                      style={styles.infoSchoolLogo}
+                      contentFit="contain"
+                      accessibilityLabel={`Logo da ${schoolInfo.name}`}
+                      onError={() => setSchoolLogoFailed(true)}
+                    />
+                  ) : (
                     <Building2 size={18} color={Colors.textMuted} />
-                    <Text style={styles.infoLabel}>Escola</Text>
-                    <Text style={styles.infoValue} numberOfLines={1}>{schoolName}</Text>
-                  </View>
-                </>
-              ) : null;
-            })()}
+                  )}
+                  <Text style={styles.infoLabel}>Escola</Text>
+                  <Text style={styles.infoValue} numberOfLines={1}>{schoolInfo.name}</Text>
+                </View>
+              </>
+            ) : null}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Segurança</Text>
+          <View style={styles.listCard}>
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => router.push('/change-password')}
+              accessibilityRole="button"
+              accessibilityLabel="Alterar senha"
+            >
+              <View style={styles.actionIcon}>
+                <Lock size={18} color={Colors.primary} />
+              </View>
+              <View style={styles.actionTextWrap}>
+                <Text style={styles.actionTitle}>Alterar senha</Text>
+                <Text style={styles.actionSubtitle}>Troque sua senha de acesso ao app</Text>
+              </View>
+              <ChevronRight size={20} color={Colors.textMuted} />
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -184,10 +339,21 @@ export default function Perfil() {
                 {students.map((student: Student) => {
                   const turma = student.turmas[0];
                   const nome = student.nome_social || student.nome;
+                  const studentLogo = resolveMediaUrl(student.school?.logo_url);
                   return (
                     <View key={student.id} style={styles.studentItem}>
-                      <View style={styles.studentIcon}>
-                        <GraduationCap size={20} color={Colors.primary} />
+                      <View style={styles.studentAvatarWrap}>
+                        <StudentAvatar nome={nome} fotoUrl={student.foto_url} size="md" />
+                        {studentLogo ? (
+                          <View style={styles.studentSchoolLogoBadge}>
+                            <Image
+                              source={{ uri: studentLogo }}
+                              style={styles.studentSchoolLogo}
+                              contentFit="contain"
+                              accessibilityLabel={`Logo da ${student.school?.nome || 'escola'}`}
+                            />
+                          </View>
+                        ) : null}
                       </View>
                       <View style={styles.studentInfo}>
                         <Text style={styles.studentName}>{nome}</Text>
@@ -253,29 +419,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: Colors.background,
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: (Platform.OS === 'android' ? 48 : 0) + 16,
-    paddingBottom: 16,
-    backgroundColor: Colors.white,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  backButton: {
-    padding: 8,
-    marginLeft: -8,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: Colors.text,
-  },
-  placeholder: {
-    width: 36,
-  },
   scrollView: {
     flex: 1,
   },
@@ -284,36 +427,127 @@ const styles = StyleSheet.create({
     paddingBottom: 100,
   },
   profileCard: {
-    borderRadius: 16,
-    padding: 24,
+    borderRadius: 20,
+    paddingTop: 28,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
     alignItems: 'center',
     marginBottom: 24,
+    overflow: 'hidden',
+    shadowColor: '#1e3a8a',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 16,
+    elevation: 6,
   },
-  avatarPlaceholder: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
+  profileGlow: {
+    position: 'absolute',
+    top: -40,
+    right: -30,
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  avatarWrap: {
+    position: 'relative',
+    marginBottom: 14,
+  },
+  profileAvatar: {
+    marginBottom: 0,
+  },
+  changePhotoButton: {
+    position: 'absolute',
+    right: 0,
+    bottom: 0,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.primary,
+    borderWidth: 2,
+    borderColor: Colors.white,
     alignItems: 'center',
-    marginBottom: 12,
+    justifyContent: 'center',
+  },
+  changePhotoLink: {
+    marginTop: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  changePhotoLinkText: {
+    color: Colors.white,
+    fontSize: 13,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
   },
   profileName: {
     fontSize: 22,
     fontWeight: 'bold',
     color: Colors.white,
     textAlign: 'center',
+    letterSpacing: -0.3,
   },
   profileRole: {
     fontSize: 14,
-    color: 'rgba(255,255,255,0.9)',
+    color: 'rgba(255,255,255,0.88)',
     marginTop: 4,
+    fontWeight: '500',
   },
-  profileSchool: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.95)',
-    marginTop: 8,
-    textAlign: 'center',
+  schoolBadge: {
+    marginTop: 18,
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    borderRadius: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.55)',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  schoolLogoFrame: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: Colors.white,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  schoolLogo: {
+    width: 40,
+    height: 40,
+  },
+  schoolBadgeText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  schoolBadgeLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 2,
+  },
+  schoolBadgeName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.text,
+    letterSpacing: -0.2,
+  },
+  infoSchoolLogo: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
   },
   section: {
     marginBottom: 24,
@@ -367,6 +601,33 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
   },
+  studentAvatarWrap: {
+    position: 'relative',
+    marginRight: 12,
+  },
+  studentSchoolLogoBadge: {
+    position: 'absolute',
+    right: -4,
+    bottom: -4,
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    backgroundColor: Colors.white,
+    borderWidth: 1.5,
+    borderColor: Colors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    shadowColor: '#0f172a',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  studentSchoolLogo: {
+    width: 16,
+    height: 16,
+  },
   studentIcon: {
     width: 40,
     height: 40,
@@ -401,5 +662,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.textMuted,
     marginTop: 8,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    gap: 12,
+  },
+  actionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  actionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  actionSubtitle: {
+    fontSize: 13,
+    color: Colors.textMuted,
+    marginTop: 2,
   },
 });

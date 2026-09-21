@@ -3,7 +3,9 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { Colors } from '@/constants/colors';
 import { Home, MessageSquare, BookOpen, ClipboardList, BarChart3, User } from 'lucide-react-native';
+import { exercisesService } from '@/services/exercises';
 import { messagesService } from '@/services/messages';
+import { avisosService } from '@/services/avisos';
 import { useAuth } from '@/context/AuthContext';
 import { useStudent } from '@/context/StudentContext';
 
@@ -20,51 +22,79 @@ export default function BottomNav() {
   const { isAuthenticated, user } = useAuth();
   const { selectedStudent } = useStudent();
   const [unreadCount, setUnreadCount] = useState<number>(0);
+  const [newExercisesCount, setNewExercisesCount] = useState<number>(0);
   const homeHref = user?.type === 'teacher' ? '/teacher-dashboard' : '/(tabs)';
+  const isResponsavel = user?.type === 'responsavel';
 
-  // Carrega contagem de mensagens não lidas
-  const loadUnreadCount = useCallback(async () => {
+  const loadBadges = useCallback(async () => {
     if (!isAuthenticated) return;
-    
-    try {
-      // Usa o aluno selecionado para contar mensagens não lidas
-      const alunoId = selectedStudent?.id;
-      const count = await messagesService.getUnreadCount(alunoId);
-      setUnreadCount(count);
-    } catch (error) {
-      console.error('Erro ao carregar contagem de mensagens:', error);
-      setUnreadCount(0);
-    }
-  }, [isAuthenticated, selectedStudent]);
 
-  // Atualiza contagem quando autenticação, aluno selecionado ou navegação muda
+    try {
+      const alunoId = selectedStudent?.id;
+      const messagesPromise = messagesService.getUnreadCount(alunoId);
+      const avisosPromise = avisosService.countNewAvisos();
+      const exercisesPromise =
+        isResponsavel && alunoId
+          ? exercisesService.countNewExercises(alunoId)
+          : Promise.resolve(0);
+
+      const [messagesCount, avisosCount, exercisesCount] = await Promise.all([
+        messagesPromise,
+        avisosPromise,
+        exercisesPromise,
+      ]);
+
+      setUnreadCount(messagesCount + avisosCount);
+      setNewExercisesCount(exercisesCount);
+    } catch (error) {
+      console.error('Erro ao carregar badges de navegação:', error);
+      setUnreadCount(0);
+      setNewExercisesCount(0);
+    }
+  }, [isAuthenticated, selectedStudent, isResponsavel]);
+
   useEffect(() => {
     if (!isAuthenticated) {
       setUnreadCount(0);
+      setNewExercisesCount(0);
       return;
     }
 
-    loadUnreadCount();
-    
-    // Atualiza a cada 30 segundos
-    const interval = setInterval(loadUnreadCount, 30000);
-    
+    loadBadges();
+
+    const interval = setInterval(loadBadges, 30000);
+
     return () => clearInterval(interval);
-  }, [isAuthenticated, selectedStudent, loadUnreadCount]);
+  }, [isAuthenticated, selectedStudent, loadBadges]);
 
-  // Atualiza contagem quando navega para/da tela de mensagens
   useEffect(() => {
-    if (pathname === '/messages' || pathname === '/message-detail') {
-      loadUnreadCount();
+    if (
+      pathname === '/messages' ||
+      pathname === '/message-detail' ||
+      pathname === '/aviso-detail' ||
+      pathname === '/exercises' ||
+      pathname === '/exercise-detail' ||
+      pathname === '/teacher-dashboard' ||
+      pathname === '/' ||
+      pathname.startsWith('/(tabs)')
+    ) {
+      loadBadges();
     }
-  }, [pathname, loadUnreadCount]);
-
+  }, [pathname, loadBadges]);
   const navItems: NavItem[] = [
     { label: 'Início', icon: Home, href: homeHref, badge: undefined },
-    { label: 'Mensagens', icon: MessageSquare, href: '/messages', badge: unreadCount > 0 ? unreadCount : undefined },
-    { label: 'Exercícios', icon: BookOpen, href: '/exercises', badge: undefined },
+    { label: 'Comunicação', icon: MessageSquare, href: '/messages', badge: unreadCount > 0 ? unreadCount : undefined },
+    {
+      label: 'Exercícios',
+      icon: BookOpen,
+      href: '/exercises',
+      badge: newExercisesCount > 0 ? newExercisesCount : undefined,
+    },
     { label: 'Provas', icon: ClipboardList, href: '/exams', badge: undefined },
-    { label: 'Boletim', icon: BarChart3, href: '/report', badge: undefined },
+    // Boletim é exclusivo de responsáveis
+    ...(isResponsavel
+      ? [{ label: 'Boletim', icon: BarChart3, href: '/report', badge: undefined } as NavItem]
+      : []),
     { label: 'Perfil', icon: User, href: '/perfil', badge: undefined },
   ];
 
@@ -156,7 +186,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   label: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '500',
   },
 });

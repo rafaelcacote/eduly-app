@@ -35,6 +35,36 @@ export interface StudentResponse {
   student: Student;
 }
 
+export interface StudentTeacherTurma {
+  id: string;
+  nome: string;
+  serie?: string | null;
+  turma_letra?: string | null;
+  ano_letivo?: number | null;
+}
+
+export interface StudentTeacherDisciplina {
+  id: string;
+  nome: string;
+  sigla?: string | null;
+}
+
+export interface StudentTeacher {
+  id: string;
+  usuario_id: string | null;
+  matricula?: string | null;
+  especializacao?: string | null;
+  nome_completo: string;
+  avatar_url?: string | null;
+  foto_url?: string | null;
+  turmas?: StudentTeacherTurma[];
+  disciplinas?: StudentTeacherDisciplina[];
+}
+
+export interface StudentTeachersResponse {
+  professores: StudentTeacher[];
+}
+
 /**
  * Serviço para gerenciar alunos
  */
@@ -66,6 +96,23 @@ class StudentsService {
         throw error;
       }
       throw new Error(error?.message || 'Erro ao buscar aluno. Tente novamente.');
+    }
+  }
+
+  /**
+   * Lista professores vinculados às turmas ativas do aluno
+   */
+  async getTeachers(studentId: string): Promise<StudentTeacher[]> {
+    try {
+      const response = await apiClient.get<StudentTeachersResponse>(
+        `/api/mobile/students/${studentId}/professores`
+      );
+      return response.professores || [];
+    } catch (error: any) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(error?.message || 'Erro ao buscar professores. Tente novamente.');
     }
   }
 }

@@ -1,4 +1,3 @@
-import { LoadingSquares } from '@/components/loading-squares';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { Image } from 'expo-image';
@@ -7,6 +6,7 @@ import { useRouter } from 'expo-router';
 import { AlertCircle, Eye, EyeOff, Lock, User as UserIcon } from 'lucide-react-native';
 import React, { useState } from 'react';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -183,7 +183,7 @@ export default function Login() {
               >
                 {isLoading ? (
                   <View style={styles.loadingContainer}>
-                    <LoadingSquares squareSize={12} gap={6} colors={['#ffffff', '#ffffff', '#ffffff']} />
+                    <ActivityIndicator size="small" color={Colors.white} />
                     <Text style={styles.submitButtonText}>Entrando...</Text>
                   </View>
                 ) : (
@@ -369,13 +369,14 @@ const styles = StyleSheet.create({
   },
   submitButtonGradient: {
     paddingVertical: 15,
+    minHeight: 52,
     alignItems: 'center',
     justifyContent: 'center',
   },
   loadingContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   submitButtonText: {
     color: Colors.white,

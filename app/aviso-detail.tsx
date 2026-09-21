@@ -4,14 +4,12 @@ import {
   Text,
   ScrollView,
   StyleSheet,
-  TouchableOpacity,
   ActivityIndicator,
   Alert,
-  Platform,
-  StatusBar,
-  Linking,
 } from 'react-native';
-import { ArrowLeft, ExternalLink } from 'lucide-react-native';
+import { AppHeader } from '@/components/AppHeader';
+import { AttachmentCard } from '@/components/AttachmentCard';
+import { AuthorSpeechCard } from '@/components/AuthorSpeech';
 import { Colors } from '@/constants/colors';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Aviso, avisosService } from '@/services/avisos';
@@ -35,16 +33,12 @@ export default function AvisoDetail() {
       setIsLoading(true);
       const data = await avisosService.getAvisoById(avisoId);
       setAviso(data);
+      await avisosService.setLastSeenAvisosAt();
     } catch (error: any) {
       Alert.alert(
         'Erro',
-        error?.message || 'Não foi possível carregar o aviso. Tente novamente.',
-        [
-          {
-            text: 'OK',
-            onPress: () => router.back(),
-          },
-        ]
+        error?.message || 'Não foi possível carregar o comunicado. Tente novamente.',
+        [{ text: 'OK', onPress: () => router.back() }]
       );
     } finally {
       setIsLoading(false);
@@ -74,32 +68,13 @@ export default function AvisoDetail() {
     return 'Prioridade normal';
   };
 
-  const handleOpenAttachment = async (url: string) => {
-    try {
-      const canOpen = await Linking.canOpenURL(url);
-      if (canOpen) {
-        await Linking.openURL(url);
-      } else {
-        Alert.alert('Erro', 'Não foi possível abrir o anexo.');
-      }
-    } catch (error) {
-      Alert.alert('Erro', 'Não foi possível abrir o anexo.');
-    }
-  };
-
   if (isLoading) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={20} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Aviso</Text>
-          <View style={styles.placeholder} />
-        </View>
+        <AppHeader title="Comunicado" />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={styles.loadingText}>Carregando aviso...</Text>
+          <Text style={styles.loadingText}>Carregando comunicado...</Text>
         </View>
       </View>
     );
@@ -108,17 +83,11 @@ export default function AvisoDetail() {
   if (!aviso) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={20} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Aviso</Text>
-          <View style={styles.placeholder} />
-        </View>
+        <AppHeader title="Comunicado" />
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>Aviso não disponível</Text>
+          <Text style={styles.emptyText}>Comunicado não disponível</Text>
           <Text style={styles.emptySubtext}>
-            Este aviso pode ter sido removido ou não estar mais disponível.
+            Este comunicado pode ter sido removido ou não estar mais disponível.
           </Text>
         </View>
       </View>
@@ -127,67 +96,55 @@ export default function AvisoDetail() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Aviso</Text>
-        <View style={styles.placeholder} />
-      </View>
+      <AppHeader title="Comunicado" />
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        <View style={styles.messageHeader}>
-          <View style={styles.messageHeaderTop}>
-            <Text style={styles.avisoIcon}>📢</Text>
-            <View style={styles.messageHeaderContent}>
-              <Text style={styles.messageTitle}>{aviso.titulo}</Text>
-              <View style={styles.messageMeta}>
-                {aviso.tenant?.nome && (
-                  <Text style={styles.tenantBadge}>{aviso.tenant.nome}</Text>
-                )}
-                {aviso.prioridade !== 'normal' && (
-                  <View
-                    style={[
-                      styles.priorityBadge,
-                      { backgroundColor: getPriorityColor(aviso.prioridade) + '20' },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.priorityText,
-                        { color: getPriorityColor(aviso.prioridade) },
-                      ]}
-                    >
-                      {getPriorityLabel(aviso.prioridade)}
-                    </Text>
-                  </View>
-                )}
+        <AuthorSpeechCard
+          author={aviso.criado_por}
+          tone="comunicado"
+          title={aviso.titulo}
+          body={aviso.conteudo}
+          meta={
+            <>
+              {aviso.tenant?.nome ? (
+                <View style={styles.metaChip}>
+                  <Text style={styles.metaChipText}>{aviso.tenant.nome}</Text>
+                </View>
+              ) : null}
+              <View style={[styles.metaChip, styles.metaChipSchool]}>
+                <Text style={[styles.metaChipText, styles.metaChipSchoolText]}>
+                  Toda a escola
+                </Text>
               </View>
-            </View>
-          </View>
-          <View style={styles.messageDateContainer}>
-            <Text style={styles.messageDate}>
+              {aviso.prioridade !== 'normal' && (
+                <View
+                  style={[
+                    styles.metaChip,
+                    { backgroundColor: getPriorityColor(aviso.prioridade) + '18' },
+                  ]}
+                >
+                  <Text
+                    style={[styles.metaChipText, { color: getPriorityColor(aviso.prioridade) }]}
+                  >
+                    {getPriorityLabel(aviso.prioridade)}
+                  </Text>
+                </View>
+              )}
+            </>
+          }
+          footer={
+            <Text style={styles.footerDate}>
               Publicado em {formatDate(aviso.publicado_em || aviso.created_at)}
             </Text>
-          </View>
-        </View>
+          }
+        />
 
-        <View style={styles.messageBody}>
-          <Text style={styles.messageContent}>{aviso.conteudo}</Text>
-        </View>
-
-        {aviso.anexo_url && (
-          <View style={styles.attachmentContainer}>
-            <Text style={styles.attachmentLabel}>Anexo:</Text>
-            <TouchableOpacity
-              style={styles.attachmentButton}
-              onPress={() => handleOpenAttachment(aviso.anexo_url!)}
-            >
-              <ExternalLink size={18} color={Colors.primary} />
-              <Text style={styles.attachmentText}>Abrir anexo</Text>
-            </TouchableOpacity>
+        {aviso.anexo_url ? (
+          <View style={styles.attachmentSection}>
+            <Text style={styles.attachmentLabel}>Anexo</Text>
+            <AttachmentCard url={aviso.anexo_url} tone="comunicado" variant="card" />
           </View>
-        )}
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -198,136 +155,43 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  header: {
-    backgroundColor: Colors.white,
-    paddingHorizontal: 16,
-    paddingTop: (Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0) + 16,
-    paddingBottom: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  backButton: {
-    padding: 8,
-    borderRadius: 8,
-  },
-  headerTitle: {
-    flex: 1,
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: Colors.text,
-    textAlign: 'center',
-  },
-  placeholder: {
-    width: 36,
-  },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
     padding: 16,
+    paddingBottom: 40,
+    gap: 14,
   },
-  messageHeader: {
-    backgroundColor: Colors.white,
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
+  metaChip: {
+    backgroundColor: '#f0fdfa',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
   },
-  messageHeaderTop: {
-    flexDirection: 'row',
-    gap: 16,
-    marginBottom: 16,
+  metaChipSchool: {
+    backgroundColor: '#ccfbf1',
   },
-  avisoIcon: {
-    fontSize: 28,
-  },
-  messageHeaderContent: {
-    flex: 1,
-  },
-  messageTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: Colors.text,
-    marginBottom: 8,
-  },
-  messageMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flexWrap: 'wrap',
-  },
-  tenantBadge: {
+  metaChipText: {
     fontSize: 12,
-    color: Colors.textMuted,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    backgroundColor: Colors.background,
-    borderRadius: 4,
-  },
-  priorityBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  priorityText: {
-    fontSize: 11,
     fontWeight: '600',
+    color: '#0f766e',
   },
-  messageDateContainer: {
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
+  metaChipSchoolText: {
+    color: '#0f766e',
   },
-  messageDate: {
+  footerDate: {
     fontSize: 12,
     color: Colors.textMuted,
   },
-  messageBody: {
-    backgroundColor: Colors.white,
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  messageContent: {
-    fontSize: 16,
-    color: Colors.text,
-    lineHeight: 24,
-  },
-  attachmentContainer: {
-    backgroundColor: Colors.white,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
+  attachmentSection: {
+    gap: 8,
   },
   attachmentLabel: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '700',
     color: Colors.text,
-    marginBottom: 8,
-  },
-  attachmentButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 12,
-    backgroundColor: Colors.background,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  attachmentText: {
-    fontSize: 14,
-    color: Colors.primary,
-    fontWeight: '500',
+    letterSpacing: 0.2,
   },
   loadingContainer: {
     flex: 1,
@@ -346,11 +210,11 @@ const styles = StyleSheet.create({
     padding: 32,
   },
   emptyText: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 16,
     color: Colors.text,
-    marginBottom: 8,
+    fontWeight: '600',
     textAlign: 'center',
+    marginBottom: 8,
   },
   emptySubtext: {
     fontSize: 14,

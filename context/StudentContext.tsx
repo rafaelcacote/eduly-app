@@ -21,16 +21,23 @@ interface StudentProviderProps {
 }
 
 export function StudentProvider({ children }: StudentProviderProps) {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isLoading: isLoadingAuth, user } = useAuth();
   const [students, setStudents] = useState<Student[]>([]);
   const [selectedStudent, setSelectedStudentState] = useState<Student | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   /**
-   * Carrega lista de alunos
+   * Carrega lista de alunos (apenas para responsáveis)
    */
   const loadStudents = useCallback(async () => {
-    if (!isAuthenticated) {
+    // Aguarda autenticação terminar antes de decidir
+    if (isLoadingAuth) {
+      return;
+    }
+
+    // Endpoint /api/mobile/students é exclusivo de responsáveis;
+    // professores usam rotas em /api/mobile/teacher/*
+    if (!isAuthenticated || user?.type !== 'responsavel') {
       setStudents([]);
       setSelectedStudentState(null);
       setIsLoading(false);
@@ -75,7 +82,7 @@ export function StudentProvider({ children }: StudentProviderProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isLoadingAuth, user?.type]);
 
   /**
    * Define o aluno selecionado

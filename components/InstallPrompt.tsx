@@ -1,99 +1,201 @@
 import { useEffect, useState } from 'react';
-import { Platform, View, Text, Pressable, StyleSheet } from 'react-native';
+import {
+  Platform,
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  Image,
+  Linking,
+  useWindowDimensions,
+} from 'react-native';
 
-const DISMISS_KEY = 'eduly-install-dismissed';
+const DISMISS_KEY = 'eduly-install-dismissed-at';
+const DISMISS_DAYS = 7;
+const MOBILE_MAX_WIDTH = 768;
+
+const PLAY_STORE_URL = process.env.EXPO_PUBLIC_PLAY_STORE_URL?.trim() || '';
+const APP_STORE_URL = process.env.EXPO_PUBLIC_APP_STORE_URL?.trim() || '';
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+};
+
+function isWebMobile(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+
+  const ua = navigator.userAgent;
+  const mobileUa = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+  const narrowScreen = window.matchMedia(`(max-width: ${MOBILE_MAX_WIDTH}px)`).matches;
+  const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+
+  return mobileUa || (narrowScreen && coarsePointer);
+}
+
+function isIosDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  const iOS = /iPad|iPhone|iPod/.test(ua);
+  // iPadOS 13+ se reporta como Macintosh, mas tem touch
+  const iPadOs =
+    navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1;
+  return iOS || iPadOs;
+}
+
+function isAlreadyInstalled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+  );
+}
+
+function wasDismissedRecently(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  const raw = localStorage.getItem(DISMISS_KEY);
+  if (!raw) return false;
+  const dismissedAt = Number(raw);
+  if (Number.isNaN(dismissedAt)) return false;
+  const ms = DISMISS_DAYS * 24 * 60 * 60 * 1000;
+  return Date.now() - dismissedAt < ms;
+}
+
+function markDismissed() {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(DISMISS_KEY, Date.now().toString());
+  }
+}
 
 export function InstallPrompt() {
-  const [showBanner, setShowBanner] = useState(false);
+  const { width } = useWindowDimensions();
+  const [visible, setVisible] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
-  const [deferredPrompt, setDeferredPrompt] = useState<{
-    prompt: () => Promise<{ outcome: string }>;
-  } | null>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
+    if (isAlreadyInstalled()) return;
+    if (!isWebMobile()) return;
+    if (wasDismissedRecently()) return;
 
-    const isStandalone =
-      typeof window !== 'undefined' &&
-      (window.matchMedia('(display-mode: standalone)').matches ||
-        (window.navigator as Navigator & { standalone?: boolean }).standalone);
+    setIsIOS(isIosDevice());
 
-    if (isStandalone) return;
-
-    const dismissed = typeof sessionStorage !== 'undefined' && sessionStorage.getItem(DISMISS_KEY);
-    if (dismissed) return;
-
-    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
-    const ios = /iPad|iPhone|iPod/.test(ua) || (navigator as Navigator & { maxTouchPoints?: number }).maxTouchPoints > 1;
-    setIsIOS(ios);
-
-    if (ios) {
-      setShowBanner(true);
-      return;
-    }
-
-    const handler = (e: Event) => {
-      e.preventDefault();
-      setDeferredPrompt(e as unknown as { prompt: () => Promise<{ outcome: string }> });
-      setShowBanner(true);
+    const onBeforeInstall = (event: Event) => {
+      event.preventDefault();
+      setDeferredPrompt(event as BeforeInstallPromptEvent);
+      setVisible(true);
     };
 
-    window.addEventListener('beforeinstallprompt', handler);
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
 
-    const timer = setTimeout(() => setShowBanner(true), 3000);
+    // Mostra instruções mesmo sem o evento nativo (iOS / alguns Android)
+    const timer = setTimeout(() => setVisible(true), 2500);
 
     return () => {
-      window.removeEventListener('beforeinstallprompt', handler);
+      window.removeEventListener('beforeinstallprompt', onBeforeInstall);
       clearTimeout(timer);
     };
   }, []);
 
+  // Esconde se redimensionar para desktop
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    if (width > MOBILE_MAX_WIDTH && !isWebMobile()) {
+      setVisible(false);
+    }
+  }, [width]);
+
   const handleInstall = async () => {
-    if (deferredPrompt) {
-      try {
-        await deferredPrompt.prompt();
-        setShowBanner(false);
-        if (typeof sessionStorage !== 'undefined') {
-          sessionStorage.setItem(DISMISS_KEY, Date.now().toString());
-        }
-      } catch {
-        setShowBanner(false);
-      }
+    if (!deferredPrompt) return;
+    try {
+      await deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+    } catch {
+      // usuário cancelou ou browser bloqueou
+    } finally {
+      setDeferredPrompt(null);
+      setVisible(false);
+      markDismissed();
     }
   };
 
   const handleDismiss = () => {
-    setShowBanner(false);
-    if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.setItem(DISMISS_KEY, Date.now().toString());
-    }
+    setVisible(false);
+    markDismissed();
   };
 
-  if (!showBanner || Platform.OS !== 'web') return null;
+  const openStore = (url: string) => {
+    if (!url) return;
+    Linking.openURL(url);
+  };
+
+  if (!visible || Platform.OS !== 'web') return null;
+
+  const showPlayStore = Boolean(PLAY_STORE_URL);
+  const showAppStore = Boolean(APP_STORE_URL) && isIOS;
+  const showNativeInstall = Boolean(deferredPrompt) && !isIOS;
 
   return (
-    <View style={styles.banner}>
-      <View style={styles.content}>
-        <Text style={styles.title}>Instalar Eduly</Text>
+    <View style={styles.overlay} pointerEvents="box-none">
+      <View style={styles.banner} accessibilityRole="alert">
+        <View style={styles.header}>
+          <Image
+            source={require('@/assets/images/logo.png')}
+            style={styles.logo}
+            resizeMode="contain"
+            accessibilityIgnoresInvertColors
+          />
+          <View style={styles.headerText}>
+            <Text style={styles.title}>Instale o Eduly no celular</Text>
+            <Text style={styles.subtitle}>Acesso rápido, como um aplicativo</Text>
+          </View>
+          <Pressable
+            onPress={handleDismiss}
+            style={styles.closeBtn}
+            accessibilityLabel="Fechar aviso de instalação"
+            hitSlop={8}
+          >
+            <Text style={styles.closeBtnText}>×</Text>
+          </Pressable>
+        </View>
+
         {isIOS ? (
           <Text style={styles.text}>
-            Toque em <Text style={styles.bold}>Compartilhar</Text> (ícone de seta) e depois em{' '}
-            <Text style={styles.bold}>Adicionar à Tela de Início</Text>
+            No Safari, toque em <Text style={styles.bold}>Compartilhar</Text> e depois em{' '}
+            <Text style={styles.bold}>Adicionar à Tela de Início</Text>.
           </Text>
-        ) : deferredPrompt ? (
-          <Text style={styles.text}>Adicione o app à sua tela inicial para acesso rápido</Text>
+        ) : showNativeInstall ? (
+          <Text style={styles.text}>
+            Instale o Eduly na tela inicial para abrir mais rápido, sem digitar o endereço.
+          </Text>
         ) : (
           <Text style={styles.text}>
-            Toque no menu <Text style={styles.bold}>⋮</Text> e selecione{' '}
-            <Text style={styles.bold}>Instalar app</Text> ou <Text style={styles.bold}>Adicionar à tela inicial</Text>
+            No Chrome, toque em <Text style={styles.bold}>⋮</Text> e escolha{' '}
+            <Text style={styles.bold}>Instalar app</Text> ou{' '}
+            <Text style={styles.bold}>Adicionar à tela inicial</Text>.
           </Text>
         )}
+
         <View style={styles.buttons}>
-          {!isIOS && (
-            <Pressable style={styles.installBtn} onPress={handleInstall}>
-              <Text style={styles.installBtnText}>Instalar</Text>
+          {showNativeInstall && (
+            <Pressable style={styles.primaryBtn} onPress={handleInstall}>
+              <Text style={styles.primaryBtnText}>Instalar agora</Text>
             </Pressable>
           )}
+
+          {showPlayStore && !isIOS && (
+            <Pressable style={styles.secondaryBtn} onPress={() => openStore(PLAY_STORE_URL)}>
+              <Text style={styles.secondaryBtnText}>Abrir na Play Store</Text>
+            </Pressable>
+          )}
+
+          {showAppStore && (
+            <Pressable style={styles.secondaryBtn} onPress={() => openStore(APP_STORE_URL)}>
+              <Text style={styles.secondaryBtnText}>Abrir na App Store</Text>
+            </Pressable>
+          )}
+
           <Pressable style={styles.dismissBtn} onPress={handleDismiss}>
             <Text style={styles.dismissBtnText}>Agora não</Text>
           </Pressable>
@@ -104,59 +206,106 @@ export function InstallPrompt() {
 }
 
 const styles = StyleSheet.create({
-  banner: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: '#1e40af',
-    padding: 16,
-    paddingBottom: 24,
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
     zIndex: 9999,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 10,
+    elevation: 9999,
   },
-  content: {
-    maxWidth: 400,
-    alignSelf: 'center',
+  banner: {
+    backgroundColor: '#1e40af',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 28,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 12,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 12,
+  },
+  logo: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#fff',
+  },
+  headerText: {
+    flex: 1,
   },
   title: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '700',
-    marginBottom: 6,
+  },
+  subtitle: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    marginTop: 2,
+  },
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+  },
+  closeBtnText: {
+    color: '#fff',
+    fontSize: 22,
+    lineHeight: 24,
+    fontWeight: '500',
   },
   text: {
     color: 'rgba(255,255,255,0.95)',
     fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 12,
+    lineHeight: 21,
+    marginBottom: 14,
   },
   bold: {
-    fontWeight: '600',
+    fontWeight: '700',
   },
   buttons: {
     flexDirection: 'row',
-    gap: 12,
+    flexWrap: 'wrap',
+    gap: 10,
     alignItems: 'center',
   },
-  installBtn: {
+  primaryBtn: {
     backgroundColor: '#fff',
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 8,
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+    borderRadius: 10,
   },
-  installBtnText: {
+  primaryBtnText: {
     color: '#1e40af',
-    fontSize: 16,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  secondaryBtn: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  secondaryBtnText: {
+    color: '#fff',
+    fontSize: 14,
     fontWeight: '600',
   },
   dismissBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    paddingVertical: 11,
+    paddingHorizontal: 8,
   },
   dismissBtnText: {
     color: 'rgba(255,255,255,0.9)',

@@ -82,8 +82,8 @@ export const BrandData = {
   // Recursos principais
   features: [
     {
-      title: 'Mensagens',
-      description: 'Comunicação direta entre professores, alunos e responsáveis',
+      title: 'Recados e Comunicados',
+      description: 'Recados direcionados e comunicados para toda a escola',
       icon: 'Mail',
     },
     {

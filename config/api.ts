@@ -1,11 +1,15 @@
 /**
  * Configuração da API
- * 
- * ATENÇÃO: Altere a URL_BASE para a URL do seu servidor Laravel
- * Exemplo: 'http://192.168.1.100:8000' para desenvolvimento local
- * ou 'https://api.seudominio.com' para produção
+ *
+ * BASE_URL = host sem /api/mobile (os endpoints já incluem esse prefixo).
+ * Demo (PWA/APK): https://demo.agendaedully.com.br
+ * Homologação:    https://homolog.agendaedully.com.br
+ * Produção:       https://app.agendaedully.com.br
+ * Local:          http://192.168.x.x:8000
+ *
+ * PWA em m.agendaedully.com.br e APK (EAS) usam EXPO_PUBLIC_API_URL no build.
  */
 export const API_CONFIG = {
-    BASE_URL: process.env.EXPO_PUBLIC_API_URL || 'https://edully.cassote.com',
+    BASE_URL: process.env.EXPO_PUBLIC_API_URL || 'https://demo.agendaedully.com.br',
     TIMEOUT: 30000, // 30 segundos
 };

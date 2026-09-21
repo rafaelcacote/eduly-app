@@ -1,11 +1,19 @@
+import { AppHeader, AppHeaderAction } from '@/components/AppHeader';
 import BottomNav from '@/components/BottomNav';
+import { DeleteConfirmModal } from '@/components/DeleteConfirmModal';
+import { ExerciseTeacherRow } from '@/components/ExerciseTeacher';
+import { PulsingDot } from '@/components/PulsingDot';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/context/AuthContext';
 import { useStudent } from '@/context/StudentContext';
-import { Exercise, exercisesService } from '@/services/exercises';
-import { useRouter } from 'expo-router';
-import { AlertCircle, ArrowLeft, CheckCircle2, Clock, Edit, Plus, Trash2 } from 'lucide-react-native';
-import React, { useCallback, useEffect, useState } from 'react';
+import {
+  Exercise,
+  exercisesService,
+  getExerciseTypeLabel,
+} from '@/services/exercises';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { Calendar, Edit, Paperclip, Plus, Trash2 } from 'lucide-react-native';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,70 +25,40 @@ import {
   View,
 } from 'react-native';
 
-type ExerciseStatus = 'pending' | 'completed' | 'overdue';
-
-interface ExerciseWithStatus extends Exercise {
-  status: ExerciseStatus;
-}
-
 export default function Exercises() {
   const router = useRouter();
   const { user } = useAuth();
   const { selectedStudent } = useStudent();
-  const [filter, setFilter] = useState('Todos');
-  const [exercises, setExercises] = useState<ExerciseWithStatus[]>([]);
+  const [exercises, setExercises] = useState<Exercise[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [seenExerciseIds, setSeenExerciseIds] = useState<string[]>([]);
+  const [exerciseToDelete, setExerciseToDelete] = useState<Exercise | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const isTeacher = user?.type === 'teacher';
 
-  /**
-   * Calcula o status do exercício baseado na data de entrega
-   */
-  const calculateStatus = (exercise: Exercise): ExerciseStatus => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const dueDate = new Date(exercise.data_entrega);
-    dueDate.setHours(23, 59, 59, 999);
-
-    // TODO: Verificar se há entrega marcada como completa
-    // Por enquanto, assumimos que não há sistema de entrega ainda
-    // Quando houver, verificar se exercise.entregue === true
-
-    if (dueDate < today) {
-      return 'overdue';
-    }
-
-    return 'pending';
-  };
-
-  /**
-   * Carrega exercícios da API
-   */
-  const loadExercises = useCallback(async () => {
+  const loadExercises = useCallback(async (opts?: { silent?: boolean }) => {
     try {
-      setError(null);
-      const params: any = {};
+      if (!opts?.silent) {
+        setError(null);
+      }
+      const params: { aluno_id?: string } = {};
 
-      // Se for responsável, filtra por aluno selecionado
       if (!isTeacher && selectedStudent?.id) {
         params.aluno_id = selectedStudent.id;
       }
 
-      const data = await exercisesService.getExercises(params);
+      const [data, seenIds] = await Promise.all([
+        exercisesService.getExercises(params),
+        isTeacher ? Promise.resolve([] as string[]) : exercisesService.getSeenExerciseIds(),
+      ]);
 
-      // Debug: verifica se tipo_exercicio está vindo da API
-      console.log('Exercícios recebidos da API:', JSON.stringify(data.slice(0, 2), null, 2));
-
-      // Adiciona status calculado a cada exercício
-      const exercisesWithStatus: ExerciseWithStatus[] = data.map(exercise => ({
-        ...exercise,
-        status: calculateStatus(exercise),
-      }));
-
-      setExercises(exercisesWithStatus);
+      setSeenExerciseIds(seenIds);
+      setExercises(Array.isArray(data) ? data : []);
+      // Não marca todos como vistos ao abrir a lista — senão o "Novo" some
+      // da tela inicial antes do responsável abrir o exercício.
     } catch (err: any) {
       console.error('Erro ao carregar exercícios:', err);
       setError(err.message || 'Erro ao carregar exercícios');
@@ -91,177 +69,55 @@ export default function Exercises() {
     }
   }, [isTeacher, selectedStudent]);
 
-  /**
-   * Carrega exercícios ao montar o componente
-   */
-  useEffect(() => {
-    loadExercises();
-  }, [loadExercises]);
+  useFocusEffect(
+    useCallback(() => {
+      loadExercises();
+    }, [loadExercises])
+  );
 
-  /**
-   * Atualiza lista ao puxar para baixo
-   */
   const onRefresh = useCallback(() => {
     setIsRefreshing(true);
-    loadExercises();
+    loadExercises({ silent: true });
   }, [loadExercises]);
 
-  /**
-   * Filtra exercícios baseado no filtro selecionado
-   */
-  const filteredExercises = exercises.filter((exercise) => {
-    if (filter === 'Todos') return true;
-    if (filter === 'Pendentes') return exercise.status === 'pending';
-    if (filter === 'Entregues') return exercise.status === 'completed';
-    if (filter === 'Atrasados') return exercise.status === 'overdue';
-    return true;
-  });
-
-  /**
-   * Formata data para exibição
-   */
   const formatDate = (dateString: string): string => {
     try {
       const date = new Date(dateString);
-      if (isNaN(date.getTime())) {
-        return dateString; // Retorna a string original se não for uma data válida
-      }
-      const day = date.getDate().toString().padStart(2, '0');
-      const month = date.toLocaleDateString('pt-BR', { month: 'short' });
-      const year = date.getFullYear();
-      return `${day} ${month} ${year}`;
-    } catch (error) {
+      if (isNaN(date.getTime())) return dateString;
+      return date.toLocaleDateString('pt-BR', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      });
+    } catch {
       return dateString;
     }
   };
 
-  /**
-   * Retorna o emoji e texto baseado no tipo do exercício
-   */
-  const getExerciseTypeDisplay = (exercise: Exercise): string => {
-    // Verifica tanto tipo_exercicio quanto tipo (para compatibilidade)
-    const tipoExercicio = (exercise.tipo_exercicio || (exercise as any).tipo || '').toLowerCase().trim();
-
-    // Debug: log para verificar o valor
-    console.log(`[Exercício: ${exercise.titulo}] tipo_exercicio: "${exercise.tipo_exercicio || 'não definido'}" | tipo processado: "${tipoExercicio}"`);
-
-    if (!tipoExercicio) {
-      console.warn(`⚠️ Tipo de exercício não encontrado para: ${exercise.titulo}`);
-      return '📝 Exercícios'; // Padrão
-    }
-
-    // Verifica se é exercício no livro (várias variações possíveis)
-    if (tipoExercicio.includes('livro') && (tipoExercicio.includes('exercicio') || tipoExercicio.includes('exercício'))) {
-      return '📝 Exercícios';
-    }
-
-    // Verifica se é exercício no caderno (várias variações possíveis)
-    if (tipoExercicio.includes('caderno') && (tipoExercicio.includes('exercicio') || tipoExercicio.includes('exercício'))) {
-      return '📝 Exercícios';
-    }
-
-    // Verifica se é trabalho escolar (várias variações possíveis)
-    if (tipoExercicio.includes('trabalho')) {
-      return '📚 Trabalho';
-    }
-
-    // Verifica valores exatos comuns
-    const tipoNormalizado = tipoExercicio.replace(/\s+/g, ' ').trim();
-    if (tipoNormalizado === 'exercicio livro' ||
-      tipoNormalizado === 'exercício livro' ||
-      tipoNormalizado === 'exercicio caderno' ||
-      tipoNormalizado === 'exercício caderno') {
-      return '📝 Exercícios';
-    }
-
-    if (tipoNormalizado === 'trabalho escolar' || tipoNormalizado === 'trabalho') {
-      return '📚 Trabalho';
-    }
-
-    // Padrão caso não encontre um tipo específico
-    console.warn(`⚠️ Tipo não reconhecido: "${tipoExercicio}" para exercício: ${exercise.titulo}`);
-    return '📝 Exercícios';
+  const openDeleteConfirm = (exercise: Exercise) => {
+    setExerciseToDelete(exercise);
   };
 
-  /**
-   * Deleta um exercício (apenas professores)
-   */
-  const handleDeleteExercise = async (exerciseId: string, exerciseTitle: string) => {
-    Alert.alert(
-      'Confirmar exclusão',
-      `Tem certeza que deseja excluir o exercício "${exerciseTitle}"?`,
-      [
-        {
-          text: 'Cancelar',
-          style: 'cancel',
-        },
-        {
-          text: 'Excluir',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await exercisesService.deleteExercise(exerciseId);
-              await loadExercises();
-              Alert.alert('Sucesso', 'Exercício excluído com sucesso!');
-            } catch (err: any) {
-              Alert.alert('Erro', err.message || 'Erro ao excluir exercício');
-            }
-          },
-        },
-      ]
-    );
-  };
+  const confirmDeleteExercise = async () => {
+    if (!exerciseToDelete) return;
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return (
-          <View style={[styles.badge, styles.badgeSuccess]}>
-            <Text style={styles.badgeTextSuccess}>✓ Entregue</Text>
-          </View>
-        );
-      case 'pending':
-        return (
-          <View style={[styles.badge, styles.badgeWarning]}>
-            <Text style={styles.badgeTextWarning}>⏱ Pendente</Text>
-          </View>
-        );
-      case 'overdue':
-        return (
-          <View style={[styles.badge, styles.badgeDanger]}>
-            <Text style={styles.badgeTextDanger}>⚠ Atrasado</Text>
-          </View>
-        );
-      default:
-        return null;
+    try {
+      setIsDeleting(true);
+      const deletedId = exerciseToDelete.id;
+      await exercisesService.deleteExercise(deletedId);
+      setExercises((prev) => prev.filter((item) => item.id !== deletedId));
+      setExerciseToDelete(null);
+    } catch (err: any) {
+      Alert.alert('Erro', err.message || 'Erro ao excluir exercício');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return <CheckCircle2 size={20} color={Colors.success} />;
-      case 'pending':
-        return <Clock size={20} color={Colors.warning} />;
-      case 'overdue':
-        return <AlertCircle size={20} color={Colors.error} />;
-      default:
-        return null;
-    }
-  };
-
-  const filters = ['Todos', 'Pendentes', 'Entregues', 'Atrasados'];
-
-  /**
-   * Navega para tela de criar exercício
-   */
   const handleCreateExercise = () => {
     router.push('/create-exercise');
   };
 
-  /**
-   * Navega para tela de editar exercício
-   */
   const handleEditExercise = (exercise: Exercise) => {
     router.push({
       pathname: '/create-exercise',
@@ -269,24 +125,17 @@ export default function Exercises() {
     });
   };
 
-  /**
-   * Navega para detalhes do exercício
-   */
   const handleViewExercise = (exercise: Exercise) => {
-    // TODO: Implementar tela de detalhes
-    Alert.alert('Detalhes', `Exercício: ${exercise.titulo}\n\n${exercise.descricao}`);
+    router.push({
+      pathname: '/exercise-detail',
+      params: { exerciseId: exercise.id },
+    });
   };
 
   if (isLoading && !isRefreshing) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={20} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Exercícios</Text>
-          <View style={styles.placeholder} />
-        </View>
+        <AppHeader title="Exercícios" />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={styles.loadingText}>Carregando exercícios...</Text>
@@ -298,50 +147,21 @@ export default function Exercises() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Exercícios</Text>
-        {isTeacher && (
-          <TouchableOpacity onPress={handleCreateExercise} style={styles.addButton}>
-            <Plus size={20} color={Colors.primary} />
-          </TouchableOpacity>
-        )}
-        {!isTeacher && <View style={styles.placeholder} />}
-      </View>
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.filtersContainer}
-        contentContainerStyle={styles.filtersContent}
-      >
-        {filters.map((f) => (
-          <TouchableOpacity
-            key={f}
-            onPress={() => setFilter(f)}
-            style={[
-              styles.filterButton,
-              filter === f && styles.filterButtonActive,
-            ]}
-          >
-            <Text
-              style={[
-                styles.filterText,
-                filter === f && styles.filterTextActive,
-              ]}
-            >
-              {f}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+      <AppHeader
+        title="Exercícios"
+        right={
+          isTeacher ? (
+            <AppHeaderAction onPress={handleCreateExercise} accessibilityLabel="Criar exercício">
+              <Plus size={20} color={Colors.white} />
+            </AppHeaderAction>
+          ) : undefined
+        }
+      />
 
       {error && (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={loadExercises} style={styles.retryButton}>
+          <TouchableOpacity onPress={() => loadExercises()} style={styles.retryButton}>
             <Text style={styles.retryButtonText}>Tentar novamente</Text>
           </TouchableOpacity>
         </View>
@@ -354,79 +174,111 @@ export default function Exercises() {
           <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
         }
       >
-        {filteredExercises.length === 0 ? (
+        {exercises.length === 0 ? (
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>
-              {filter === 'Todos'
-                ? 'Nenhum exercício encontrado'
-                : `Nenhum exercício ${filter.toLowerCase()} encontrado`}
-            </Text>
+            <Text style={styles.emptyText}>Nenhum exercício encontrado</Text>
           </View>
         ) : (
-          filteredExercises.map((exercise) => (
-            <TouchableOpacity
-              key={exercise.id}
-              style={styles.exerciseCard}
-              onPress={() => handleViewExercise(exercise)}
-            >
-              <View style={styles.exerciseHeader}>
-                {getStatusIcon(exercise.status)}
-                <View style={styles.exerciseInfo}>
-                  <View style={styles.exerciseTitleRow}>
-                    <Text style={styles.exerciseType}>
-                      {getExerciseTypeDisplay(exercise)}
+          exercises.map((exercise) => {
+            const isNew =
+              !isTeacher && exercisesService.isExerciseNew(exercise, seenExerciseIds);
+
+            return (
+              <View
+                key={exercise.id}
+                style={[styles.exerciseCard, isNew && styles.exerciseCardNew]}
+              >
+                <TouchableOpacity
+                  onPress={() => handleViewExercise(exercise)}
+                  activeOpacity={0.72}
+                >
+                  <ExerciseTeacherRow exercise={exercise} />
+
+                  <View style={styles.titleRow}>
+                    <Text
+                      style={[styles.exerciseTitle, isNew && styles.exerciseTitleNew]}
+                      numberOfLines={2}
+                    >
+                      {exercise.titulo}
                     </Text>
+                    {isNew && (
+                      <View style={styles.newRow}>
+                        <PulsingDot size={8} />
+                        <View style={styles.newBadge}>
+                          <Text style={styles.newBadgeText}>Novo</Text>
+                        </View>
+                      </View>
+                    )}
                   </View>
-                  <Text style={styles.exerciseTitle}>{exercise.titulo}</Text>
-                  <Text style={styles.exerciseMeta}>
-                    {exercise.disciplina_nome || 'Disciplina'} • {exercise.professor_nome || 'Professor'}
-                  </Text>
-                  {exercise.turma_nome && (
-                    <Text style={styles.exerciseClass}>
-                      Turma: {exercise.turma_nome}
+
+                  {!!exercise.descricao?.trim() && (
+                    <Text style={styles.exerciseDescription} numberOfLines={2}>
+                      {exercise.descricao}
                     </Text>
                   )}
-                </View>
-                {getStatusBadge(exercise.status)}
-              </View>
 
-              <Text style={styles.exerciseDescription}>{exercise.descricao}</Text>
+                  <View style={styles.cardMeta}>
+                    <View style={styles.typePill}>
+                      <Text style={styles.typePillText}>{getExerciseTypeLabel(exercise)}</Text>
+                    </View>
+                    <View style={styles.dueRow}>
+                      <Calendar size={13} color={Colors.textMuted} />
+                      <Text style={styles.dueText}>
+                        Prazo{' '}
+                        <Text style={styles.dueBold}>{formatDate(exercise.data_entrega)}</Text>
+                      </Text>
+                    </View>
+                    {exercise.anexo_url ? (
+                      <View style={styles.attachHint}>
+                        <Paperclip size={13} color={Colors.primary} />
+                      </View>
+                    ) : null}
+                  </View>
 
-              <View style={styles.exerciseFooter}>
-                <Text style={styles.exerciseDueDate}>
-                  Prazo: <Text style={styles.exerciseDueDateBold}>{formatDate(exercise.data_entrega)}</Text>
-                </Text>
-                {exercise.anexo_url && (
-                  <Text style={styles.exerciseAttachments}>
-                    📎 Anexo disponível
-                  </Text>
+                  {exercise.turma_nome && isTeacher ? (
+                    <Text style={styles.turmaText}>Turma {exercise.turma_nome}</Text>
+                  ) : null}
+                </TouchableOpacity>
+
+                {isTeacher && (
+                  <View style={styles.exerciseActions}>
+                    <TouchableOpacity
+                      onPress={() => handleEditExercise(exercise)}
+                      style={styles.actionButton}
+                      activeOpacity={0.75}
+                    >
+                      <Edit size={16} color={Colors.primary} />
+                      <Text style={styles.actionButtonText}>Editar</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => openDeleteConfirm(exercise)}
+                      style={[styles.actionButton, styles.deleteButton]}
+                      activeOpacity={0.75}
+                    >
+                      <Trash2 size={16} color={Colors.error} />
+                      <Text style={[styles.actionButtonText, styles.deleteButtonText]}>
+                        Excluir
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 )}
               </View>
-
-              {isTeacher && (
-                <View style={styles.exerciseActions}>
-                  <TouchableOpacity
-                    onPress={() => handleEditExercise(exercise)}
-                    style={styles.actionButton}
-                  >
-                    <Edit size={16} color={Colors.primary} />
-                    <Text style={styles.actionButtonText}>Editar</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => handleDeleteExercise(exercise.id, exercise.titulo)}
-                    style={[styles.actionButton, styles.deleteButton]}
-                  >
-                    <Trash2 size={16} color={Colors.error} />
-                    <Text style={[styles.actionButtonText, styles.deleteButtonText]}>Excluir</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </TouchableOpacity>
-          ))
+            );
+          })
         )}
       </ScrollView>
 
       <BottomNav />
+
+      <DeleteConfirmModal
+        visible={!!exerciseToDelete}
+        itemName={exerciseToDelete?.titulo}
+        isDeleting={isDeleting}
+        onCancel={() => {
+          if (!isDeleting) setExerciseToDelete(null);
+        }}
+        onConfirm={confirmDeleteExercise}
+      />
     </View>
   );
 }
@@ -435,36 +287,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
-  },
-  header: {
-    backgroundColor: Colors.white,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  backButton: {
-    padding: 8,
-    borderRadius: 8,
-  },
-  headerTitle: {
-    flex: 1,
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: Colors.text,
-    textAlign: 'center',
-  },
-  placeholder: {
-    width: 36,
-  },
-  addButton: {
-    padding: 8,
-    borderRadius: 8,
   },
   loadingContainer: {
     flex: 1,
@@ -512,41 +334,6 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     textAlign: 'center',
   },
-  filtersContainer: {
-    maxHeight: 60,
-  },
-  filtersContent: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 8,
-    alignItems: 'center',
-  },
-  filterButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: Colors.white,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginRight: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 36,
-  },
-  filterButtonActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-  filterText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: Colors.text,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  filterTextActive: {
-    color: Colors.white,
-  },
   scrollView: {
     flex: 1,
   },
@@ -557,99 +344,105 @@ const styles = StyleSheet.create({
   },
   exerciseCard: {
     backgroundColor: Colors.white,
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 16,
     borderWidth: 1,
     borderColor: Colors.border,
+    gap: 12,
+    shadowColor: '#0b1f52',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 2,
   },
-  exerciseHeader: {
+  exerciseCardNew: {
+    backgroundColor: '#eff6ff',
+    borderColor: '#bfdbfe',
+  },
+  titleRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 12,
-  },
-  exerciseInfo: {
-    flex: 1,
-  },
-  exerciseTitleRow: {
-    marginBottom: 4,
-  },
-  exerciseType: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: Colors.primary,
-    marginBottom: 2,
+    gap: 8,
+    marginTop: 12,
   },
   exerciseTitle: {
-    fontSize: 14,
-    fontWeight: '600',
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '700',
     color: Colors.text,
-    marginBottom: 4,
+    letterSpacing: -0.2,
+    lineHeight: 22,
   },
-  exerciseMeta: {
-    fontSize: 12,
-    color: Colors.textMuted,
+  exerciseTitleNew: {
+    fontWeight: '800',
   },
-  exerciseClass: {
-    fontSize: 11,
-    color: Colors.textMuted,
+  newRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     marginTop: 2,
   },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
+  newBadge: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
-  badgeSuccess: {
-    backgroundColor: '#d1fae5',
-  },
-  badgeWarning: {
-    backgroundColor: '#fef3c7',
-  },
-  badgeDanger: {
-    backgroundColor: '#fee2e2',
-  },
-  badgeTextSuccess: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.success,
-  },
-  badgeTextWarning: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.warning,
-  },
-  badgeTextDanger: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.error,
+  newBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: Colors.white,
+    textTransform: 'uppercase',
   },
   exerciseDescription: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginBottom: 12,
+    fontSize: 13,
+    lineHeight: 19,
+    color: Colors.textSecondary,
+    marginTop: 8,
   },
-  exerciseFooter: {
+  cardMeta: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
   },
-  exerciseDueDate: {
+  typePill: {
+    backgroundColor: Colors.muted,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  typePillText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  dueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  dueText: {
     fontSize: 12,
     color: Colors.textMuted,
   },
-  exerciseDueDateBold: {
-    fontWeight: '600',
+  dueBold: {
+    fontWeight: '700',
+    color: Colors.text,
   },
-  exerciseAttachments: {
+  attachHint: {
+    marginLeft: 'auto',
+  },
+  turmaText: {
     fontSize: 12,
-    color: Colors.primary,
+    color: Colors.textMuted,
     fontWeight: '500',
+    marginTop: 10,
   },
   exerciseActions: {
     flexDirection: 'row',
     gap: 12,
-    marginTop: 12,
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
@@ -675,4 +468,3 @@ const styles = StyleSheet.create({
     color: Colors.error,
   },
 });
-

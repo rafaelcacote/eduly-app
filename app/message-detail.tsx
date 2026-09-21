@@ -1,180 +1,226 @@
-import React, { useEffect, useState } from 'react';
+import { AppHeader } from '@/components/AppHeader';
+import { AttachmentCard } from '@/components/AttachmentCard';
+import { StudentAvatar } from '@/components/StudentAvatar';
+import { Colors } from '@/constants/colors';
+import { useAuth } from '@/context/AuthContext';
+import { getAuthorFirstName, getAuthorPhotoUrl, getRecadoDaProfLabel } from '@/services/authors';
+import { Message, messagesService } from '@/services/messages';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Send } from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  TouchableOpacity,
   ActivityIndicator,
   Alert,
+  Keyboard,
+  KeyboardAvoidingView,
   Platform,
-  StatusBar,
-  Linking,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import { ArrowLeft, ExternalLink, CheckCircle2, Trash2 } from 'lucide-react-native';
-import { Colors } from '@/constants/colors';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { Message, messagesService, MessageType } from '@/services/messages';
-import { useAuth } from '@/context/AuthContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function MessageDetail() {
   const router = useRouter();
   const { user } = useAuth();
-  const { messageId } = useLocalSearchParams<{ messageId: string }>();
-  const [message, setMessage] = useState<Message | null>(null);
+  const insets = useSafeAreaInsets();
+  const { messageId, conversaId: conversaIdParam } = useLocalSearchParams<{
+    messageId?: string;
+    conversaId?: string;
+  }>();
+
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [conversaId, setConversaId] = useState<string | null>(conversaIdParam || null);
   const [isLoading, setIsLoading] = useState(true);
+  const [replyText, setReplyText] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  const inputRef = useRef<TextInput>(null);
 
-  useEffect(() => {
-    if (messageId) {
-      loadMessage();
-    }
-  }, [messageId]);
+  const isParent = user?.type === 'responsavel';
 
-  const loadMessage = async () => {
-    if (!messageId) return;
-
+  const loadThread = useCallback(async () => {
     try {
       setIsLoading(true);
-      const messageData = await messagesService.getMessageById(messageId);
-      setMessage(messageData);
 
-      // Marca como lida se ainda não estiver lida
-      if (!messageData.lida) {
-        await messagesService.markAsRead(messageId);
-        setMessage({ ...messageData, lida: true, lida_em: new Date().toISOString() });
+      let resolvedConversaId = conversaIdParam || null;
+      let thread: Message[] = [];
+
+      if (resolvedConversaId) {
+        const history = await messagesService.getConversation(resolvedConversaId);
+        resolvedConversaId = history.conversa_id;
+        thread = history.messages;
+      } else if (messageId) {
+        const single = await messagesService.getMessageById(messageId);
+        resolvedConversaId = single.conversa_id || single.id;
+
+        try {
+          const history = await messagesService.getConversation(resolvedConversaId);
+          resolvedConversaId = history.conversa_id || resolvedConversaId;
+          thread = history.messages.length > 0 ? history.messages : [single];
+        } catch {
+          thread = [single];
+        }
+      }
+
+      setConversaId(resolvedConversaId);
+      setMessages(thread);
+
+      if (resolvedConversaId) {
+        try {
+          await messagesService.markConversationAsRead(resolvedConversaId);
+          setMessages((prev) =>
+            prev.map((item) => ({
+              ...item,
+              lida: true,
+              lida_em: item.lida_em || new Date().toISOString(),
+            }))
+          );
+        } catch {
+          // Não bloqueia a leitura se marcar como lida falhar
+        }
       }
     } catch (error: any) {
       Alert.alert(
         'Erro',
-        error?.message || 'Não foi possível carregar a mensagem. Tente novamente.',
-        [
-          {
-            text: 'OK',
-            onPress: () => router.back(),
-          },
-        ]
+        error?.message || 'Não foi possível carregar a conversa. Tente novamente.',
+        [{ text: 'OK', onPress: () => router.back() }]
       );
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [conversaIdParam, messageId, router]);
+
+  useEffect(() => {
+    if (messageId || conversaIdParam) {
+      loadThread();
+    }
+  }, [messageId, conversaIdParam, loadThread]);
+
+  useEffect(() => {
+    if (!isLoading && messages.length > 0) {
+      requestAnimationFrame(() => {
+        scrollRef.current?.scrollToEnd({ animated: false });
+      });
+    }
+  }, [isLoading, messages.length]);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const showSub = Keyboard.addListener(showEvent, () => {
+      setIsKeyboardVisible(true);
+      setTimeout(() => {
+        scrollRef.current?.scrollToEnd({ animated: true });
+      }, Platform.OS === 'ios' ? 50 : 120);
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      setIsKeyboardVisible(false);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const teacherAuthor = useMemo(() => {
+    if (!isParent || !user?.id) return null;
+    const fromTeacher = messages.find(
+      (item) => item.remetente?.id && item.remetente.id !== user.id
+    )?.remetente;
+    return fromTeacher || null;
+  }, [isParent, messages, user?.id]);
+
+  const headerTitle = useMemo(() => {
+    if (isParent && teacherAuthor) {
+      return getRecadoDaProfLabel(teacherAuthor.nome_completo);
+    }
+    const first = messages[0];
+    if (!first) return 'Conversa';
+    return first.titulo?.replace(/^Re:\s*/i, '') || 'Conversa';
+  }, [isParent, teacherAuthor, messages]);
+
+  const headerSubtitle = useMemo(() => {
+    const first = messages[0];
+    const alunoNome = first?.aluno?.nome_social || first?.aluno?.nome;
+    if (isParent && teacherAuthor) {
+      const subject = first?.titulo?.replace(/^Re:\s*/i, '');
+      if (subject) return subject;
+    }
+    if (alunoNome) return `Sobre ${alunoNome}`;
+    return undefined;
+  }, [isParent, teacherAuthor, messages]);
+
+  const canReply = Boolean(conversaId || messages[messages.length - 1]?.id);
 
   const formatDate = (dateString: string): string => {
     const date = new Date(dateString);
     return date.toLocaleDateString('pt-BR', {
       day: 'numeric',
-      month: 'long',
-      year: 'numeric',
+      month: 'short',
       hour: '2-digit',
       minute: '2-digit',
     });
   };
 
-  // Ícones de mensagem - usando emojis
-  const getMessageIcon = (tipo: MessageType): string => {
-    const iconEmojis: Record<MessageType, string> = {
-      informativo: 'ℹ️', // Informativo → neutro
-      atencao: '⚠️',     // Atenção → médio
-      aviso: '🚨',       // Aviso → alto
-      lembrete: '🔔',    // Lembrete → ação futura
-    };
-
-    return iconEmojis[tipo] || '📄';
-  };
-
-  // Componente de ícone de mensagem
-  const MessageIcon = ({ tipo }: { tipo: MessageType }) => {
-    const emoji = getMessageIcon(tipo);
-    return <Text style={styles.messageIcon}>{emoji}</Text>;
-  };
-
-  const getPriorityColor = (prioridade: string): string => {
-    if (prioridade === 'alta') return Colors.error;
-    if (prioridade === 'media') return Colors.warning;
-    return Colors.textMuted;
-  };
-
-  const getPriorityLabel = (prioridade: string): string => {
-    if (prioridade === 'alta') return 'Alta Prioridade';
-    if (prioridade === 'media') return 'Média Prioridade';
-    return 'Prioridade Normal';
-  };
-
-  const handleOpenAttachment = async (url: string) => {
-    try {
-      const canOpen = await Linking.canOpenURL(url);
-      if (canOpen) {
-        await Linking.openURL(url);
-      } else {
-        Alert.alert('Erro', 'Não foi possível abrir o anexo.');
-      }
-    } catch (error) {
-      Alert.alert('Erro', 'Não foi possível abrir o anexo.');
+  const handleSendReply = async () => {
+    if (!replyText.trim()) {
+      Alert.alert('Atenção', 'Escreva uma resposta.');
+      return;
     }
-  };
 
-  const handleDeleteMessage = () => {
-    if (!message) return;
+    const lastMessage = messages[messages.length - 1];
+    if (!conversaId && !lastMessage?.id) {
+      Alert.alert('Erro', 'Não foi possível identificar a conversa.');
+      return;
+    }
 
-    Alert.alert(
-      'Excluir Mensagem',
-      `Tem certeza que deseja excluir a mensagem "${message.titulo}"? Esta ação não pode ser desfeita.`,
-      [
-        {
-          text: 'Cancelar',
-          style: 'cancel',
-        },
-        {
-          text: 'Excluir',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await messagesService.deleteMessage(message.id);
-              Alert.alert('Sucesso', 'Mensagem excluída com sucesso!', [
-                {
-                  text: 'OK',
-                  onPress: () => router.back(),
-                },
-              ]);
-            } catch (err: any) {
-              Alert.alert('Erro', err.message || 'Erro ao excluir mensagem');
-            }
-          },
-        },
-      ]
-    );
+    try {
+      setIsSending(true);
+      const created = await messagesService.replyToConversation({
+        conversa_id: conversaId || undefined,
+        mensagem_pai_id: lastMessage?.id,
+        conteudo: replyText.trim(),
+      });
+
+      setMessages((prev) => [...prev, created]);
+      setReplyText('');
+      setConversaId(created.conversa_id || conversaId);
+
+      requestAnimationFrame(() => {
+        scrollRef.current?.scrollToEnd({ animated: true });
+      });
+    } catch (error: any) {
+      Alert.alert('Erro', error?.message || 'Não foi possível enviar a resposta.');
+    } finally {
+      setIsSending(false);
+    }
   };
 
   if (isLoading) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={20} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Mensagem</Text>
-          <View style={styles.placeholder} />
-        </View>
+        <AppHeader title="Conversa" />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={styles.loadingText}>Carregando mensagem...</Text>
+          <Text style={styles.loadingText}>Carregando conversa...</Text>
         </View>
       </View>
     );
   }
 
-  if (!message) {
+  if (messages.length === 0) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={20} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Mensagem</Text>
-          <View style={styles.placeholder} />
-        </View>
+        <AppHeader title="Conversa" />
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>Mensagem não encontrada</Text>
+          <Text style={styles.emptyText}>Conversa não encontrada</Text>
         </View>
       </View>
     );
@@ -182,82 +228,128 @@ export default function MessageDetail() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Mensagem</Text>
-        {user?.type === 'teacher' ? (
-          <TouchableOpacity onPress={handleDeleteMessage} style={styles.deleteButton}>
-            <Trash2 size={20} color={Colors.error} />
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.placeholder} />
-        )}
-      </View>
+      <AppHeader title={headerTitle} subtitle={headerSubtitle} />
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        {/* Cabeçalho da mensagem */}
-        <View style={styles.messageHeader}>
-          <View style={styles.messageHeaderTop}>
-            <MessageIcon tipo={message.tipo} />
-            <View style={styles.messageHeaderContent}>
-              <Text style={styles.messageTitle}>{message.titulo}</Text>
-              <View style={styles.messageMeta}>
-                <Text style={styles.messageType}>{message.tipo}</Text>
-                {message.prioridade !== 'normal' && (
-                  <View
-                    style={[
-                      styles.priorityBadge,
-                      { backgroundColor: getPriorityColor(message.prioridade) + '20' },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.priorityText,
-                        { color: getPriorityColor(message.prioridade) },
-                      ]}
-                    >
-                      {getPriorityLabel(message.prioridade)}
-                    </Text>
-                  </View>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 64 : 0}
+      >
+        <ScrollView
+          ref={scrollRef}
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          onContentSizeChange={() => {
+            if (isKeyboardVisible) {
+              scrollRef.current?.scrollToEnd({ animated: false });
+            }
+          }}
+        >
+          {messages.map((item) => {
+            const isMine = item.remetente?.id === user?.id;
+            const authorName = item.remetente?.nome_completo || 'Participante';
+
+            return (
+              <View
+                key={item.id}
+                style={[styles.bubbleRow, isMine ? styles.bubbleRowMine : styles.bubbleRowOther]}
+              >
+                {!isMine && (
+                  <StudentAvatar
+                    nome={authorName}
+                    fotoUrl={getAuthorPhotoUrl(item.remetente)}
+                    size="sm"
+                  />
                 )}
+                <View
+                  style={[
+                    styles.bubble,
+                    isMine ? styles.bubbleMine : styles.bubbleOther,
+                  ]}
+                >
+                  {!isMine && (
+                    <Text style={styles.bubbleAuthor} numberOfLines={1}>
+                      {getAuthorFirstName(authorName)}
+                    </Text>
+                  )}
+                  {!!item.titulo && (
+                    <Text
+                      style={[styles.bubbleTitle, isMine && styles.bubbleTitleMine]}
+                      numberOfLines={2}
+                    >
+                      {item.titulo}
+                    </Text>
+                  )}
+                  <Text style={[styles.bubbleBody, isMine && styles.bubbleBodyMine]}>
+                    {item.conteudo}
+                  </Text>
+                  {item.anexo_url ? (
+                    <AttachmentCard
+                      url={item.anexo_url}
+                      variant="bubble"
+                      tone={isMine ? 'mine' : 'recado'}
+                    />
+                  ) : null}
+                  <Text style={[styles.bubbleTime, isMine && styles.bubbleTimeMine]}>
+                    {formatDate(item.created_at)}
+                  </Text>
+                </View>
               </View>
+            );
+          })}
+        </ScrollView>
+
+        {canReply && (
+          <View
+            style={[
+              styles.composerWrap,
+              {
+                paddingBottom: isKeyboardVisible
+                  ? 10
+                  : Math.max(insets.bottom, 10),
+              },
+            ]}
+          >
+            <Text style={styles.composerLabel}>Responder</Text>
+            <View style={styles.composer}>
+              <TextInput
+                ref={inputRef}
+                style={styles.composerInput}
+                placeholder="Escreva sua resposta..."
+                placeholderTextColor={Colors.textMuted}
+                value={replyText}
+                onChangeText={setReplyText}
+                multiline
+                maxLength={4000}
+                editable={!isSending}
+                onFocus={() => {
+                  setTimeout(() => {
+                    scrollRef.current?.scrollToEnd({ animated: true });
+                  }, 150);
+                }}
+              />
+              <TouchableOpacity
+                style={[
+                  styles.sendButton,
+                  (!replyText.trim() || isSending) && styles.sendButtonDisabled,
+                ]}
+                onPress={handleSendReply}
+                disabled={!replyText.trim() || isSending}
+                accessibilityRole="button"
+                accessibilityLabel="Enviar resposta"
+              >
+                {isSending ? (
+                  <ActivityIndicator size="small" color={Colors.white} />
+                ) : (
+                  <Send size={18} color={Colors.white} />
+                )}
+              </TouchableOpacity>
             </View>
           </View>
-
-          <View style={styles.messageDateContainer}>
-            <Text style={styles.messageDate}>{formatDate(message.created_at)}</Text>
-            {message.lida && (
-              <View style={styles.readIndicator}>
-                <CheckCircle2 size={16} color={Colors.success} />
-                <Text style={styles.readText}>
-                  Lida em {message.lida_em ? formatDate(message.lida_em) : 'agora'}
-                </Text>
-              </View>
-            )}
-          </View>
-        </View>
-
-        {/* Conteúdo da mensagem */}
-        <View style={styles.messageBody}>
-          <Text style={styles.messageContent}>{message.conteudo}</Text>
-        </View>
-
-        {/* Anexo */}
-        {message.anexo_url && (
-          <View style={styles.attachmentContainer}>
-            <Text style={styles.attachmentLabel}>Anexo:</Text>
-            <TouchableOpacity
-              style={styles.attachmentButton}
-              onPress={() => handleOpenAttachment(message.anexo_url!)}
-            >
-              <ExternalLink size={18} color={Colors.primary} />
-              <Text style={styles.attachmentText}>Abrir anexo</Text>
-            </TouchableOpacity>
-          </View>
         )}
-      </ScrollView>
+      </KeyboardAvoidingView>
     </View>
   );
 }
@@ -267,148 +359,8 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  header: {
-    backgroundColor: Colors.white,
-    paddingHorizontal: 16,
-    paddingTop: (Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0) + 16,
-    paddingBottom: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  backButton: {
-    padding: 8,
-    borderRadius: 8,
-  },
-  headerTitle: {
+  flex: {
     flex: 1,
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: Colors.text,
-    textAlign: 'center',
-  },
-  placeholder: {
-    width: 36,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  messageHeader: {
-    backgroundColor: Colors.white,
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  messageHeaderTop: {
-    flexDirection: 'row',
-    gap: 16,
-    marginBottom: 16,
-  },
-  messageIcon: {
-    fontSize: 28,
-  },
-  messageHeaderContent: {
-    flex: 1,
-  },
-  messageTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: Colors.text,
-    marginBottom: 8,
-  },
-  messageMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flexWrap: 'wrap',
-  },
-  messageType: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    textTransform: 'capitalize',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    backgroundColor: Colors.background,
-    borderRadius: 4,
-  },
-  priorityBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  priorityText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  messageDateContainer: {
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  messageDate: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginBottom: 8,
-  },
-  readIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  readText: {
-    fontSize: 12,
-    color: Colors.success,
-    fontWeight: '500',
-  },
-  messageBody: {
-    backgroundColor: Colors.white,
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  messageContent: {
-    fontSize: 16,
-    color: Colors.text,
-    lineHeight: 24,
-  },
-  attachmentContainer: {
-    backgroundColor: Colors.white,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  attachmentLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: Colors.text,
-    marginBottom: 8,
-  },
-  attachmentButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 12,
-    backgroundColor: Colors.background,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  attachmentText: {
-    fontSize: 14,
-    color: Colors.primary,
-    fontWeight: '500',
   },
   loadingContainer: {
     flex: 1,
@@ -424,11 +376,122 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 32,
+    padding: 24,
   },
   emptyText: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 15,
+    color: Colors.textMuted,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 20,
+    gap: 12,
+  },
+  bubbleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    maxWidth: '100%',
+  },
+  bubbleRowMine: {
+    justifyContent: 'flex-end',
+  },
+  bubbleRowOther: {
+    justifyContent: 'flex-start',
+  },
+  bubble: {
+    maxWidth: '78%',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+  },
+  bubbleMine: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+    borderBottomRightRadius: 4,
+  },
+  bubbleOther: {
+    backgroundColor: Colors.white,
+    borderColor: Colors.border,
+    borderBottomLeftRadius: 4,
+  },
+  bubbleAuthor: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.primary,
+    marginBottom: 4,
+  },
+  bubbleTitle: {
+    fontSize: 13,
+    fontWeight: '700',
     color: Colors.text,
+    marginBottom: 4,
+  },
+  bubbleTitleMine: {
+    color: Colors.white,
+  },
+  bubbleBody: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: Colors.text,
+  },
+  bubbleBodyMine: {
+    color: Colors.white,
+  },
+  bubbleTime: {
+    marginTop: 6,
+    fontSize: 11,
+    color: Colors.textMuted,
+    alignSelf: 'flex-end',
+  },
+  bubbleTimeMine: {
+    color: 'rgba(255,255,255,0.8)',
+  },
+  composerWrap: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    backgroundColor: Colors.white,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    gap: 8,
+  },
+  composerLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.text,
+    paddingHorizontal: 2,
+  },
+  composer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 10,
+  },
+  composerInput: {
+    flex: 1,
+    minHeight: 48,
+    maxHeight: 120,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
+    fontSize: 15,
+    color: Colors.text,
+    backgroundColor: Colors.background,
+  },
+  sendButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendButtonDisabled: {
+    opacity: 0.5,
   },
 });

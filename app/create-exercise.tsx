@@ -1,29 +1,69 @@
+import { AppHeader } from '@/components/AppHeader';
 import BottomNav from '@/components/BottomNav';
+import Calendar from '@/components/Calendar';
+import { SuccessModal } from '@/components/SuccessModal';
 import { Colors } from '@/constants/colors';
-import { useAuth } from '@/context/AuthContext';
-import { exercisesService, Exercise } from '@/services/exercises';
+import { exercisesService } from '@/services/exercises';
 import { teachersService, Disciplina, Turma } from '@/services/teachers';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { ArrowLeft, Calendar, Save } from 'lucide-react-native';
+import { Calendar as CalendarIcon, Save } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Platform,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-// Usando input de data nativo
+
+function formatDateDisplay(date: Date): string {
+  return date.toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+}
+
+/** YYYY-MM-DD no fuso local (evita toISOString deslocar o dia) */
+function toLocalISODate(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function startOfToday(): Date {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+function parseLocalISODate(value: string): Date {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [y, m, d] = value.split('-').map((part) => Number.parseInt(part, 10));
+    return new Date(y, m - 1, d, 12, 0, 0);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return new Date();
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 12, 0, 0);
+}
+
+function showAlert(title: string, message: string, onOk?: () => void) {
+  if (Platform.OS === 'web') {
+    window.alert(message ? `${title}\n\n${message}` : title);
+    onOk?.();
+    return;
+  }
+  Alert.alert(title, message, [{ text: 'OK', onPress: onOk }]);
+}
 
 export default function CreateExercise() {
   const router = useRouter();
   const params = useLocalSearchParams<{ exerciseId?: string }>();
-  const { user } = useAuth();
   const isEditing = !!params.exerciseId;
 
   const [titulo, setTitulo] = useState('');
@@ -31,8 +71,14 @@ export default function CreateExercise() {
   const [selectedDisciplina, setSelectedDisciplina] = useState<Disciplina | null>(null);
   const [selectedTurma, setSelectedTurma] = useState<Turma | null>(null);
   const [tipoExercicio, setTipoExercicio] = useState<string>('');
-  const [dataEntrega, setDataEntrega] = useState(new Date());
+  const [dataEntrega, setDataEntrega] = useState(() => {
+    const date = new Date();
+    date.setHours(12, 0, 0, 0);
+    return date;
+  });
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [pickerMonth, setPickerMonth] = useState(() => new Date());
+  const [dateDraft, setDateDraft] = useState('');
   const [disciplinas, setDisciplinas] = useState<Disciplina[]>([]);
   const [turmas, setTurmas] = useState<Turma[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -40,12 +86,19 @@ export default function CreateExercise() {
   const [showDisciplinaSelector, setShowDisciplinaSelector] = useState(false);
   const [showTurmaSelector, setShowTurmaSelector] = useState(false);
   const [showTipoExercicioSelector, setShowTipoExercicioSelector] = useState(false);
+  const [successVisible, setSuccessVisible] = useState(false);
+  const [successTitle, setSuccessTitle] = useState('Tudo certo!');
+  const [successMessage, setSuccessMessage] = useState('');
 
+  /** Valores aceitos pela API (Rule::in no backend) */
   const tiposExercicio = [
-    'Exercício de caderno',
-    'Exercício de livro',
-    'Trabalho',
-  ];
+    { value: 'exercicio_caderno', label: 'Exercício de caderno' },
+    { value: 'exercicio_livro', label: 'Exercício de livro' },
+    { value: 'trabalho', label: 'Trabalho' },
+  ] as const;
+
+  const tipoExercicioLabel =
+    tiposExercicio.find((t) => t.value === tipoExercicio)?.label || tipoExercicio;
 
   useEffect(() => {
     loadData();
@@ -64,7 +117,7 @@ export default function CreateExercise() {
       setDisciplinas(disciplinasData);
       setTurmas(turmasData);
     } catch (error: any) {
-      Alert.alert('Erro', error.message || 'Erro ao carregar dados');
+      showAlert('Erro', error.message || 'Erro ao carregar dados');
     } finally {
       setIsLoading(false);
     }
@@ -75,60 +128,126 @@ export default function CreateExercise() {
       setIsLoading(true);
       const exercise = await exercisesService.getExerciseById(id);
       setTitulo(exercise.titulo);
-      setDescricao(exercise.descricao);
-      setDataEntrega(new Date(exercise.data_entrega));
+      setDescricao(exercise.descricao || '');
+      const entrega = parseLocalISODate(exercise.data_entrega);
+      setDataEntrega(entrega);
+      setPickerMonth(entrega);
       if (exercise.tipo_exercicio) {
         setTipoExercicio(exercise.tipo_exercicio);
       }
-      
-      // Encontra disciplina e turma correspondentes
+
+      const [disciplinasData, turmasData] = await Promise.all([
+        teachersService.getDisciplinas(),
+        teachersService.getTurmas(),
+      ]);
+      setDisciplinas(disciplinasData);
+      setTurmas(turmasData);
+
       if (exercise.disciplina_id) {
-        const disciplina = disciplinas.find(d => d.id === exercise.disciplina_id);
+        const disciplina = disciplinasData.find((d) => d.id === exercise.disciplina_id);
         if (disciplina) setSelectedDisciplina(disciplina);
       }
       if (exercise.turma_id) {
-        const turma = turmas.find(t => t.id === exercise.turma_id);
+        const turma = turmasData.find((t) => t.id === exercise.turma_id);
         if (turma) setSelectedTurma(turma);
       }
     } catch (error: any) {
-      Alert.alert('Erro', error.message || 'Erro ao carregar exercício');
-      router.back();
+      showAlert('Erro', error.message || 'Erro ao carregar exercício', () => router.back());
     } finally {
       setIsLoading(false);
     }
   };
 
+  const openDatePicker = () => {
+    setPickerMonth(new Date(dataEntrega.getFullYear(), dataEntrega.getMonth(), 1));
+    setDateDraft(formatDateDisplay(dataEntrega));
+    setShowDatePicker(true);
+  };
+
+  const applyDateMask = (text: string): string => {
+    const digits = text.replace(/\D/g, '').slice(0, 8);
+    if (digits.length <= 2) return digits;
+    if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+    return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+  };
+
+  const parseDraftDate = (text: string): Date | null => {
+    const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(text.trim());
+    if (!match) return null;
+    const day = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const year = Number(match[3]);
+    const date = new Date(year, month, day, 12, 0, 0);
+    if (
+      date.getFullYear() !== year ||
+      date.getMonth() !== month ||
+      date.getDate() !== day
+    ) {
+      return null;
+    }
+    return date;
+  };
+
+  const confirmDraftDate = () => {
+    const parsed = parseDraftDate(dateDraft);
+    if (!parsed) {
+      showAlert('Atenção', 'Informe uma data válida no formato DD/MM/AAAA.');
+      return;
+    }
+    if (parsed < startOfToday()) {
+      showAlert('Atenção', 'A data de entrega deve ser hoje ou uma data futura.');
+      return;
+    }
+    setDataEntrega(parsed);
+    setShowDatePicker(false);
+  };
+
+  const handleDayPress = (day: number) => {
+    const next = new Date(pickerMonth.getFullYear(), pickerMonth.getMonth(), day, 12, 0, 0);
+    if (next < startOfToday()) {
+      showAlert('Atenção', 'A data de entrega deve ser hoje ou uma data futura.');
+      return;
+    }
+    setDataEntrega(next);
+    setDateDraft(formatDateDisplay(next));
+    setShowDatePicker(false);
+  };
+
   const handleSave = async () => {
-    // Validações
     if (!titulo.trim()) {
-      Alert.alert('Atenção', 'Por favor, preencha o título do exercício');
+      showAlert('Atenção', 'Por favor, preencha o título do exercício');
       return;
     }
 
     if (!descricao.trim()) {
-      Alert.alert('Atenção', 'Por favor, preencha a descrição do exercício');
+      showAlert('Atenção', 'Por favor, preencha a descrição do exercício');
       return;
     }
 
     if (!selectedDisciplina) {
-      Alert.alert('Atenção', 'Por favor, selecione uma disciplina');
+      showAlert('Atenção', 'Por favor, selecione uma disciplina');
       return;
     }
 
     if (!selectedTurma) {
-      Alert.alert('Atenção', 'Por favor, selecione uma turma');
+      showAlert('Atenção', 'Por favor, selecione uma turma');
       return;
     }
 
     if (!tipoExercicio) {
-      Alert.alert('Atenção', 'Por favor, selecione o tipo de exercício');
+      showAlert('Atenção', 'Por favor, selecione o tipo de exercício');
+      return;
+    }
+
+    if (dataEntrega < startOfToday()) {
+      showAlert('Atenção', 'A data de entrega deve ser hoje ou uma data futura.');
       return;
     }
 
     try {
       setIsSaving(true);
 
-      const dataEntregaStr = dataEntrega.toISOString().split('T')[0];
+      const dataEntregaStr = toLocalISODate(dataEntrega);
 
       if (isEditing && params.exerciseId) {
         await exercisesService.updateExercise(params.exerciseId, {
@@ -139,9 +258,9 @@ export default function CreateExercise() {
           data_entrega: dataEntregaStr,
           tipo_exercicio: tipoExercicio,
         });
-        Alert.alert('Sucesso', 'Exercício atualizado com sucesso!', [
-          { text: 'OK', onPress: () => router.back() },
-        ]);
+        setSuccessTitle('Exercício atualizado');
+        setSuccessMessage('As alterações foram salvas e já estão disponíveis para os alunos.');
+        setSuccessVisible(true);
       } else {
         await exercisesService.createExercise({
           titulo: titulo.trim(),
@@ -151,37 +270,26 @@ export default function CreateExercise() {
           data_entrega: dataEntregaStr,
           tipo_exercicio: tipoExercicio,
         });
-        Alert.alert('Sucesso', 'Exercício criado com sucesso!', [
-          { text: 'OK', onPress: () => router.back() },
-        ]);
+        setSuccessTitle('Exercício criado');
+        setSuccessMessage('O exercício foi publicado com sucesso e já pode ser visto pelos alunos.');
+        setSuccessVisible(true);
       }
     } catch (error: any) {
-      Alert.alert('Erro', error.message || 'Erro ao salvar exercício');
+      showAlert('Erro', error.message || 'Erro ao salvar exercício');
     } finally {
       setIsSaving(false);
     }
   };
 
-  const formatDate = (date: Date): string => {
-    return date.toLocaleDateString('pt-BR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    });
+  const handleSuccessClose = () => {
+    setSuccessVisible(false);
+    router.replace('/exercises');
   };
 
   if (isLoading) {
     return (
       <View style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <ArrowLeft size={20} color={Colors.text} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>
-            {isEditing ? 'Editar Exercício' : 'Novo Exercício'}
-          </Text>
-          <View style={styles.placeholder} />
-        </View>
+        <AppHeader title={isEditing ? 'Editar Exercício' : 'Novo Exercício'} />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={styles.loadingText}>Carregando...</Text>
@@ -191,17 +299,15 @@ export default function CreateExercise() {
     );
   }
 
+  const selectedDayInPicker =
+    pickerMonth.getMonth() === dataEntrega.getMonth() &&
+    pickerMonth.getFullYear() === dataEntrega.getFullYear()
+      ? dataEntrega.getDate()
+      : null;
+
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <ArrowLeft size={20} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>
-          {isEditing ? 'Editar Exercício' : 'Novo Exercício'}
-        </Text>
-        <View style={styles.placeholder} />
-      </View>
+      <AppHeader title={isEditing ? 'Editar Exercício' : 'Novo Exercício'} />
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         <View style={styles.section}>
@@ -250,7 +356,9 @@ export default function CreateExercise() {
             onPress={() => setShowTurmaSelector(true)}
           >
             <Text style={styles.selectorButtonText}>
-              {selectedTurma ? `${selectedTurma.serie} ${selectedTurma.turma_letra}` : 'Selecione uma turma'}
+              {selectedTurma
+                ? `${selectedTurma.serie} ${selectedTurma.turma_letra}`
+                : 'Selecione uma turma'}
             </Text>
             <Text style={styles.selectorButtonArrow}>▼</Text>
           </TouchableOpacity>
@@ -263,7 +371,7 @@ export default function CreateExercise() {
             onPress={() => setShowTipoExercicioSelector(true)}
           >
             <Text style={styles.selectorButtonText}>
-              {tipoExercicio || 'Selecione o tipo de exercício'}
+              {tipoExercicioLabel || 'Selecione o tipo de exercício'}
             </Text>
             <Text style={styles.selectorButtonArrow}>▼</Text>
           </TouchableOpacity>
@@ -271,13 +379,44 @@ export default function CreateExercise() {
 
         <View style={styles.section}>
           <Text style={styles.label}>Data de Entrega *</Text>
-          <TouchableOpacity
-            style={styles.selectorButton}
-            onPress={() => setShowDatePicker(true)}
-          >
-            <Calendar size={20} color={Colors.primary} />
-            <Text style={styles.selectorButtonText}>{formatDate(dataEntrega)}</Text>
-          </TouchableOpacity>
+          {Platform.OS === 'web' ? (
+            <View style={styles.webDateRow}>
+              {/* input nativo no web — mais confiável que Alert/modal de texto */}
+              <input
+                type="date"
+                value={toLocalISODate(dataEntrega)}
+                min={toLocalISODate(startOfToday())}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (!value) return;
+                  const next = parseLocalISODate(value);
+                  if (next < startOfToday()) {
+                    showAlert('Atenção', 'A data de entrega deve ser hoje ou uma data futura.');
+                    return;
+                  }
+                  setDataEntrega(next);
+                }}
+                style={{
+                  flex: 1,
+                  border: `1px solid ${Colors.border}`,
+                  borderRadius: 12,
+                  padding: '14px 16px',
+                  fontSize: 16,
+                  color: Colors.text,
+                  backgroundColor: Colors.white,
+                  fontFamily: 'inherit',
+                }}
+              />
+              <TouchableOpacity style={styles.webDateButton} onPress={openDatePicker}>
+                <CalendarIcon size={20} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity style={styles.selectorButton} onPress={openDatePicker}>
+              <CalendarIcon size={20} color={Colors.primary} />
+              <Text style={styles.selectorButtonText}>{formatDateDisplay(dataEntrega)}</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <TouchableOpacity
@@ -300,8 +439,17 @@ export default function CreateExercise() {
 
       <BottomNav />
 
-      {/* Date Picker Modal */}
-      {showDatePicker && Platform.OS === 'android' && (
+      <SuccessModal
+        visible={successVisible}
+        title={successTitle}
+        message={successMessage}
+        hint="Você será redirecionado para a lista de exercícios."
+        buttonLabel="Ver exercícios"
+        onClose={handleSuccessClose}
+      />
+
+      {/* Date Picker Modal — disponível em todas as plataformas */}
+      {showDatePicker && (
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
@@ -310,43 +458,33 @@ export default function CreateExercise() {
                 <Text style={styles.modalClose}>✕</Text>
               </TouchableOpacity>
             </View>
-            <View style={styles.datePickerModalContent}>
-              <Text style={styles.helperText}>Digite a data no formato DD/MM/AAAA:</Text>
+            <ScrollView style={styles.datePickerModalContent}>
+              <Calendar
+                selectedDate={pickerMonth}
+                onDateChange={setPickerMonth}
+                selectedDay={selectedDayInPicker}
+                onDayPress={handleDayPress}
+              />
+              <Text style={[styles.helperText, { marginTop: 16 }]}>
+                Ou digite a data no formato DD/MM/AAAA:
+              </Text>
               <TextInput
                 style={styles.input}
                 placeholder="DD/MM/AAAA"
                 placeholderTextColor={Colors.textMuted}
-                value={formatDate(dataEntrega)}
-                onChangeText={(text) => {
-                  // Parse manual da data DD/MM/AAAA
-                  const parts = text.split('/');
-                  if (parts.length === 3) {
-                    const day = parseInt(parts[0], 10);
-                    const month = parseInt(parts[1], 10) - 1;
-                    const year = parseInt(parts[2], 10);
-                    if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
-                      const newDate = new Date(year, month, day);
-                      if (newDate >= new Date()) {
-                        setDataEntrega(newDate);
-                      }
-                    }
-                  }
-                }}
+                value={dateDraft}
+                onChangeText={(text) => setDateDraft(applyDateMask(text))}
                 keyboardType="numeric"
                 maxLength={10}
               />
-              <TouchableOpacity
-                style={styles.saveButton}
-                onPress={() => setShowDatePicker(false)}
-              >
+              <TouchableOpacity style={styles.saveButton} onPress={confirmDraftDate}>
                 <Text style={styles.saveButtonText}>Confirmar</Text>
               </TouchableOpacity>
-            </View>
+            </ScrollView>
           </View>
         </View>
       )}
 
-      {/* Modal de seleção de disciplina */}
       {showDisciplinaSelector && (
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -377,7 +515,6 @@ export default function CreateExercise() {
         </View>
       )}
 
-      {/* Modal de seleção de turma */}
       {showTurmaSelector && (
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -400,7 +537,9 @@ export default function CreateExercise() {
                     setShowTurmaSelector(false);
                   }}
                 >
-                  <Text style={styles.modalOptionText}>{turma.serie} {turma.turma_letra}</Text>
+                  <Text style={styles.modalOptionText}>
+                    {turma.serie} {turma.turma_letra}
+                  </Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -408,7 +547,6 @@ export default function CreateExercise() {
         </View>
       )}
 
-      {/* Modal de seleção de tipo de exercício */}
       {showTipoExercicioSelector && (
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -421,17 +559,17 @@ export default function CreateExercise() {
             <ScrollView style={styles.modalScrollView}>
               {tiposExercicio.map((tipo) => (
                 <TouchableOpacity
-                  key={tipo}
+                  key={tipo.value}
                   style={[
                     styles.modalOption,
-                    tipoExercicio === tipo && styles.modalOptionSelected,
+                    tipoExercicio === tipo.value && styles.modalOptionSelected,
                   ]}
                   onPress={() => {
-                    setTipoExercicio(tipo);
+                    setTipoExercicio(tipo.value);
                     setShowTipoExercicioSelector(false);
                   }}
                 >
-                  <Text style={styles.modalOptionText}>{tipo}</Text>
+                  <Text style={styles.modalOptionText}>{tipo.label}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -446,33 +584,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
-  },
-  header: {
-    backgroundColor: Colors.white,
-    paddingHorizontal: 16,
-    paddingTop: (Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0) + 16,
-    paddingBottom: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  backButton: {
-    padding: 8,
-    borderRadius: 8,
-  },
-  headerTitle: {
-    flex: 1,
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: Colors.text,
-    textAlign: 'center',
-  },
-  placeholder: {
-    width: 36,
   },
   loadingContainer: {
     flex: 1,
@@ -510,32 +621,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  inputWithIcon: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: Colors.white,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  inputFlex: {
-    flex: 1,
-    borderWidth: 0,
-    paddingHorizontal: 0,
-  },
-  datePickerContainer: {
-    marginTop: 8,
-  },
-  datePickerModalContent: {
-    padding: 20,
-  },
-  helperText: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginBottom: 8,
-  },
   textArea: {
     minHeight: 160,
     paddingTop: 14,
@@ -560,6 +645,21 @@ const styles = StyleSheet.create({
   selectorButtonArrow: {
     fontSize: 12,
     color: Colors.textMuted,
+  },
+  webDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  webDateButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   saveButton: {
     flexDirection: 'row',
@@ -595,7 +695,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     width: '90%',
     maxWidth: 400,
-    maxHeight: '70%',
+    maxHeight: '80%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
@@ -619,6 +719,14 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: Colors.textMuted,
     fontWeight: '300',
+  },
+  datePickerModalContent: {
+    padding: 16,
+  },
+  helperText: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    marginBottom: 8,
   },
   modalScrollView: {
     maxHeight: 400,

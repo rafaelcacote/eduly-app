@@ -4,7 +4,7 @@ import { Platform } from 'react-native';
 
 import { apiClient } from './api';
 import { Exercise, exercisesService } from './exercises';
-import { Message, messagesService } from './messages';
+import { Conversation, messagesService } from './messages';
 import { Test, testsService } from './tests';
 
 const NOTIFICATION_STATE_KEY = '@eduly:notifications:state:v1';
@@ -173,8 +173,15 @@ class NotificationsService {
         });
       }
 
-      // Get Expo Push Token
-      const tokenData = await Notifications.getExpoPushTokenAsync();
+      // Get Expo Push Token (projectId ajuda em builds EAS)
+      const projectId =
+        Constants.easConfig?.projectId ||
+        Constants.expoConfig?.extra?.eas?.projectId ||
+        process.env.EXPO_PUBLIC_EAS_PROJECT_ID;
+
+      const tokenData = projectId
+        ? await Notifications.getExpoPushTokenAsync({ projectId })
+        : await Notifications.getExpoPushTokenAsync();
       const pushToken = tokenData.data;
 
       // Save locally
@@ -203,8 +210,10 @@ class NotificationsService {
         return;
       }
 
-      // Use the dedicated endpoint to remove just the device token
-      await apiClient.delete(`/api/mobile/push-tokens/${encodeURIComponent(pushToken)}`);
+      // Use body (token tem caracteres que quebram path)
+      await apiClient.delete('/api/mobile/push-tokens', {
+        push_token: pushToken,
+      });
       await AsyncStorage.removeItem(PUSH_TOKEN_KEY);
       console.log('[Push] Push token unregistered.');
     } catch (error) {
@@ -319,7 +328,9 @@ class NotificationsService {
 
       if (!studentState.initialized) {
         studentState.initialized = true;
-        studentState.messageIds = trimIds(messages.map((item) => item.id));
+        studentState.messageIds = trimIds(
+          messages.map((item) => item.id || item.conversa_id).filter(Boolean) as string[]
+        );
         studentState.exerciseIds = trimIds(exercises.map((item) => item.id));
         studentState.examReminderKeys = trimIds(
           tests.filter((item) => isTomorrow(item.data_prova)).map((item) => `${item.id}:tomorrow`)
@@ -348,28 +359,36 @@ class NotificationsService {
     }
   }
 
-  private async notifyNewMessages(messages: Message[], studentState: StudentNotificationState): Promise<void> {
+  private async notifyNewMessages(
+    messages: Conversation[],
+    studentState: StudentNotificationState
+  ): Promise<void> {
     const Notifications = await this.getNotificationsModule();
     if (!Notifications) {
       return;
     }
 
     for (const message of messages) {
-      if (studentState.messageIds.includes(message.id)) {
+      const trackingId = message.id || message.conversa_id;
+      if (!trackingId || studentState.messageIds.includes(trackingId)) {
         continue;
       }
 
       await Notifications.scheduleNotificationAsync({
         content: {
-          title: 'Nova mensagem da escola',
-          body: message.titulo || 'Voce recebeu uma nova mensagem.',
-          data: { type: 'message', messageId: message.id },
+          title: 'Novo recado da escola',
+          body: message.titulo || message.ultima_mensagem?.titulo || 'Voce recebeu um novo recado.',
+          data: {
+            type: 'message',
+            messageId: message.id || '',
+            conversaId: message.conversa_id || '',
+          },
           sound: 'default',
         },
         trigger: null,
       });
 
-      studentState.messageIds.push(message.id);
+      studentState.messageIds.push(trackingId);
     }
   }
 

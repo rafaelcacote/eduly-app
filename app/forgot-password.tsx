@@ -14,6 +14,7 @@ import { useRouter } from 'expo-router';
 import { Mail, ArrowLeft, CheckCircle } from 'lucide-react-native';
 import { Colors } from '@/constants/colors';
 import { LinearGradient } from 'expo-linear-gradient';
+import { authService } from '@/services/auth';
 
 export default function ForgotPassword() {
   const router = useRouter();
@@ -24,20 +25,20 @@ export default function ForgotPassword() {
 
   const handleSubmit = async () => {
     setError('');
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      setError('Por favor, insira um email válido');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-
-      if (!email || !email.includes('@')) {
-        setError('Por favor, insira um email válido');
-        setIsLoading(false);
-        return;
-      }
-
+      await authService.forgotPassword(normalizedEmail);
       setSubmitted(true);
-    } catch (err) {
-      setError('Erro ao enviar email. Tente novamente.');
+    } catch (err: any) {
+      setError(err?.message || 'Erro ao enviar email. Tente novamente.');
     } finally {
       setIsLoading(false);
     }
@@ -89,6 +90,7 @@ export default function ForgotPassword() {
                       onChangeText={setEmail}
                       keyboardType="email-address"
                       autoCapitalize="none"
+                      autoCorrect={false}
                       editable={!isLoading}
                     />
                   </View>
@@ -131,7 +133,8 @@ export default function ForgotPassword() {
                 </View>
                 <Text style={styles.successTitle}>Email Enviado!</Text>
                 <Text style={styles.successText}>
-                  Verifique seu email para o link de redefinição de senha.
+                  Se este e-mail estiver cadastrado, você receberá um link para criar uma nova senha.
+                  Abra o e-mail e toque em “Redefinir senha” — a página abrirá no navegador.
                 </Text>
                 <TouchableOpacity
                   onPress={() => router.push('/login')}
@@ -319,4 +322,3 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
 });
-
