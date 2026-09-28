@@ -5,7 +5,7 @@ PWA (Expo static) na VPS Hostinger, ao lado dos ambientes Laravel.
 | Item | Valor |
 |------|--------|
 | Domínio | `https://m.agendaedully.com.br` |
-| API | `https://demo.agendaedully.com.br` |
+| API | `https://app.agendaedully.com.br` |
 | Pasta VPS | `/opt/apps/edully/mobile` |
 | Porta host | `127.0.0.1:8084` → container nginx |
 | Compose | `edully-mobile` |

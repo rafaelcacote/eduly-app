@@ -9,7 +9,7 @@ RUN npm ci
 COPY . .
 
 # API usada pelo bundle web (bake no build)
-ARG EXPO_PUBLIC_API_URL=https://demo.agendaedully.com.br
+ARG EXPO_PUBLIC_API_URL=https://app.agendaedully.com.br
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
 ENV CI=1
 

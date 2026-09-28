@@ -6,7 +6,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       args:
-        EXPO_PUBLIC_API_URL: ${EXPO_PUBLIC_API_URL:-https://demo.agendaedully.com.br}
+        EXPO_PUBLIC_API_URL: ${EXPO_PUBLIC_API_URL:-https://app.agendaedully.com.br}
     image: edully-mobile:latest
     restart: unless-stopped
     ports:
