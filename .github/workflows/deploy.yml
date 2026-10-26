@@ -1,0 +1,84 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: true
+          build-args: |
+            EXPO_PUBLIC_API_URL=https://app.agendaedully.com.br
+          tags: |
+            ghcr.io/rafaelcacote/eduly-app:main
+            ghcr.io/rafaelcacote/eduly-app:main-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=main
+          cache-to: type=gha,scope=main,mode=max
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Trust server host
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy container
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          GH_USER: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "${SSH_USERNAME}@${SSH_HOST}" bash -s << EOF
+          set -euo pipefail
+          cd /opt/stack
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GH_USER}" --password-stdin
+          docker compose pull edully_mobile
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          docker compose up -d --no-deps --force-recreate edully_mobile
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if docker compose exec -T edully_mobile wget -qO- http://127.0.0.1/ >/dev/null; then
+              echo "healthy"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "container did not become healthy" >&2
+          docker compose logs --tail 80 edully_mobile >&2
+          exit 1
+          EOF
