@@ -73,4 +73,4 @@ No PC, com EAS CLI logado:
 eas build -p android --profile preview
 ```
 
-A URL da API no APK vem de `eas.json` → `https://demo.agendaedully.com.br`.
+A URL da API no APK vem de `eas.json` → `https://app.agendaedully.com.br`.

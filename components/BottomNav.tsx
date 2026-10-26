@@ -83,7 +83,7 @@ export default function BottomNav() {
   }, [pathname, loadBadges]);
   const navItems: NavItem[] = [
     { label: 'Início', icon: Home, href: homeHref, badge: undefined },
-    { label: 'Comunicação', icon: MessageSquare, href: '/messages', badge: unreadCount > 0 ? unreadCount : undefined },
+    { label: 'Avisos', icon: MessageSquare, href: '/messages', badge: unreadCount > 0 ? unreadCount : undefined },
     {
       label: 'Exercícios',
       icon: BookOpen,

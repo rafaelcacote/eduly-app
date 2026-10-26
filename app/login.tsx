@@ -3,7 +3,7 @@ import { useAuth } from '@/context/AuthContext';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { AlertCircle, Eye, EyeOff, Lock, User as UserIcon } from 'lucide-react-native';
+import { AlertCircle, Eye, EyeOff, Fingerprint, Lock, User as UserIcon } from 'lucide-react-native';
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
@@ -28,7 +28,7 @@ const formatCPF = (value: string) => {
 
 export default function Login() {
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, biometricUnlockAvailable, unlockWithBiometrics } = useAuth();
   const [cpf, setCpf] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -81,6 +81,29 @@ export default function Login() {
     }
   };
 
+  const handleBiometricUnlock = async () => {
+    setError('');
+    setIsLoading(true);
+
+    try {
+      const loggedUser = await unlockWithBiometrics();
+      if (!loggedUser) {
+        setError('Não foi possível confirmar sua identidade. Use a senha do app ou tente de novo.');
+        return;
+      }
+
+      if (loggedUser.type === 'teacher') {
+        router.replace('/teacher-dashboard');
+      } else {
+        router.replace('/');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Erro ao entrar. Tente novamente.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleCpfChange = (value: string) => {
     const formatted = formatCPF(value);
     setCpf(formatted);
@@ -124,6 +147,17 @@ export default function Login() {
                 <AlertCircle size={18} color={Colors.error} />
                 <Text style={styles.errorText}>{error}</Text>
               </View>
+            ) : null}
+
+            {biometricUnlockAvailable ? (
+              <TouchableOpacity
+                onPress={handleBiometricUnlock}
+                disabled={isLoading}
+                style={[styles.biometricButton, isLoading && styles.submitButtonDisabled]}
+              >
+                <Fingerprint size={20} color={Colors.primary} />
+                <Text style={styles.biometricButtonText}>Entrar com digital ou senha do celular</Text>
+              </TouchableOpacity>
             ) : null}
 
             <View style={styles.inputContainer}>
@@ -316,6 +350,25 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     color: Colors.error,
+  },
+  biometricButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    marginBottom: 18,
+    backgroundColor: '#eff6ff',
+  },
+  biometricButtonText: {
+    color: Colors.primary,
+    fontSize: 15,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   inputContainer: {
     marginBottom: 15,

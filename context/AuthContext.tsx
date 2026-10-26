@@ -1,13 +1,22 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { authService, User, LoginCredentials } from '@/services/auth';
 import { notificationsService } from '@/services/notifications';
+import {
+  authenticateWithBiometrics,
+  isBiometricEnabled,
+  promptToEnableBiometrics,
+  setBiometricEnabled,
+} from '@/services/biometrics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  /** Sessão salva, mas o usuário cancelou a digital/senha do celular. */
+  biometricUnlockAvailable: boolean;
   login: (credentials: LoginCredentials) => Promise<User>;
+  unlockWithBiometrics: () => Promise<User | null>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   updatePhoto: (params: {
@@ -27,6 +36,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [biometricUnlockAvailable, setBiometricUnlockAvailable] = useState(false);
 
   /**
    * Carrega dados do usuário ao iniciar o app
@@ -55,111 +65,112 @@ export function AuthProvider({ children }: AuthProviderProps) {
     );
   };
 
+  const clearStoredSession = async () => {
+    try {
+      await AsyncStorage.multiRemove(['@eduly:token', '@eduly:user']);
+      await setBiometricEnabled(false);
+    } catch (cleanError) {
+      console.warn('Erro ao limpar storage:', cleanError);
+    }
+    setBiometricUnlockAvailable(false);
+  };
+
+  const restoreSessionFromServer = async (): Promise<User> => {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Timeout ao carregar usuário')), 10000);
+    });
+
+    const loadPromise = (async () => {
+      const updatedUser = await authService.getMe();
+      if (!isValidUser(updatedUser)) {
+        throw new Error('Resposta inválida do servidor');
+      }
+
+      try {
+        await AsyncStorage.setItem('@eduly:user', JSON.stringify(updatedUser));
+      } catch (saveError) {
+        console.warn('Erro ao salvar usuário:', saveError);
+      }
+
+      return updatedUser;
+    })();
+
+    return Promise.race([loadPromise, timeoutPromise]);
+  };
+
   const loadStoredUser = async () => {
     try {
       setIsLoading(true);
-      
-      // Timeout para evitar carregamento infinito
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Timeout ao carregar usuário')), 10000); // 10 segundos
-      });
+      setBiometricUnlockAvailable(false);
 
-      const loadPromise = (async () => {
-        try {
-          const [storedUser, token] = await Promise.all([
-            authService.getStoredUser(),
-            authService.getToken(),
-          ]);
+      const [storedUser, token, biometricOn] = await Promise.all([
+        authService.getStoredUser(),
+        authService.getToken(),
+        isBiometricEnabled(),
+      ]);
 
-          // Valida se tem token e usuário válido
-          if (!token || !storedUser || !isValidUser(storedUser)) {
-            // Limpa dados inconsistentes
-            try {
-              await AsyncStorage.multiRemove(['@eduly:token', '@eduly:user']);
-            } catch (cleanError) {
-              console.warn('Erro ao limpar storage:', cleanError);
-            }
-            setUser(null);
-            setIsAuthenticated(false);
-            return;
-          }
+      if (!token || !storedUser || !isValidUser(storedUser)) {
+        await clearStoredSession();
+        setUser(null);
+        setIsAuthenticated(false);
+        return;
+      }
 
-          // Tenta obter dados atualizados do servidor
-          try {
-            const updatedUser = await authService.getMe();
-            
-            // Valida resposta do servidor
-            if (!isValidUser(updatedUser)) {
-              throw new Error('Resposta inválida do servidor');
-            }
-
-            setUser(updatedUser);
-            setIsAuthenticated(true);
-
-            // Atualiza dados salvos
-            try {
-              await AsyncStorage.setItem('@eduly:user', JSON.stringify(updatedUser));
-            } catch (saveError) {
-              console.warn('Erro ao salvar usuário:', saveError);
-              // Continua mesmo se não conseguir salvar
-            }
-          } catch (apiError: any) {
-            // Token inválido/expirado ou erro de conexão: limpa tudo e exige login
-            console.log('Erro ao validar token:', apiError?.message || apiError);
-            try {
-              await AsyncStorage.multiRemove(['@eduly:token', '@eduly:user']);
-            } catch (cleanError) {
-              console.warn('Erro ao limpar storage após erro de API:', cleanError);
-            }
-            setUser(null);
-            setIsAuthenticated(false);
-          }
-        } catch (error: any) {
-          console.error('Erro ao carregar usuário do storage:', error?.message || error);
-          // Limpa dados em caso de erro
-          try {
-            await AsyncStorage.multiRemove(['@eduly:token', '@eduly:user']);
-          } catch (cleanError) {
-            console.warn('Erro ao limpar storage:', cleanError);
-          }
+      // A biometria fica fora do timeout: o usuário pode demorar para encostar o dedo.
+      if (biometricOn) {
+        const confirmed = await authenticateWithBiometrics();
+        if (!confirmed) {
           setUser(null);
           setIsAuthenticated(false);
+          setBiometricUnlockAvailable(true);
+          return;
         }
-      })();
-
-      // Aguarda com timeout
-      await Promise.race([loadPromise, timeoutPromise]);
-    } catch (error: any) {
-      // Timeout ou outro erro: limpa estado e força login
-      console.error('Erro ou timeout ao carregar usuário:', error?.message || error);
-      try {
-        await AsyncStorage.multiRemove(['@eduly:token', '@eduly:user']);
-      } catch (cleanError) {
-        console.warn('Erro ao limpar storage:', cleanError);
       }
+
+      try {
+        const updatedUser = await restoreSessionFromServer();
+        setUser(updatedUser);
+        setIsAuthenticated(true);
+        setBiometricUnlockAvailable(false);
+      } catch (apiError: any) {
+        console.log('Erro ao validar token:', apiError?.message || apiError);
+        await clearStoredSession();
+        setUser(null);
+        setIsAuthenticated(false);
+      }
+    } catch (error: any) {
+      console.error('Erro ou timeout ao carregar usuário:', error?.message || error);
+      await clearStoredSession();
       setUser(null);
       setIsAuthenticated(false);
     } finally {
-      // Sempre finaliza o loading
       setIsLoading(false);
     }
   };
 
   const login = async (credentials: LoginCredentials): Promise<User> => {
-    try {
-      const response = await authService.login(credentials);
-      setUser(response.user);
-      setIsAuthenticated(true);
+    const response = await authService.login(credentials);
+    await promptToEnableBiometrics();
+    setUser(response.user);
+    setIsAuthenticated(true);
+    setBiometricUnlockAvailable(false);
 
-      // Registra push token após login bem-sucedido (não bloqueia o login em caso de falha)
-      notificationsService.registerPushToken().catch((err) =>
-        console.warn('[Push] Failed to register token after login:', err)
-      );
+    notificationsService.registerPushToken().catch((err) =>
+      console.warn('[Push] Failed to register token after login:', err)
+    );
 
-      return response.user;
-    } catch (error: any) {
-      throw error;
-    }
+    return response.user;
+  };
+
+  const unlockWithBiometrics = async (): Promise<User | null> => {
+    const confirmed = await authenticateWithBiometrics();
+    if (!confirmed) return null;
+
+    const updatedUser = await restoreSessionFromServer();
+    setUser(updatedUser);
+    setIsAuthenticated(true);
+    setBiometricUnlockAvailable(false);
+    return updatedUser;
   };
 
   const logout = async () => {
@@ -172,12 +183,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     try {
       await authService.logout();
+      await setBiometricEnabled(false);
       setUser(null);
       setIsAuthenticated(false);
+      setBiometricUnlockAvailable(false);
     } catch (error: any) {
-      // Mesmo se falhar, limpa o estado local
+      await setBiometricEnabled(false);
       setUser(null);
       setIsAuthenticated(false);
+      setBiometricUnlockAvailable(false);
       throw error;
     }
   };
@@ -211,7 +225,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
         user,
         isLoading,
         isAuthenticated,
+        biometricUnlockAvailable,
         login,
+        unlockWithBiometrics,
         logout,
         refreshUser,
         updatePhoto,

@@ -24,7 +24,9 @@
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.INTERNET"
+        "android.permission.INTERNET",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
       ]
     },
     "web": {
@@ -61,6 +63,12 @@
         }
       ],
       "expo-status-bar",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "O Eduly usa o reconhecimento facial para desbloquear o aplicativo."
+        }
+      ],
       "expo-web-browser",
       [
         "expo-build-properties",
